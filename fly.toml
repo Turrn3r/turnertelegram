@@ -1,8 +1,13 @@
-app = "YOUR_FLY_APP_NAME"
-primary_region = "lhr"
+app = "turnertelegram"
+primary_region = "ams"
 
 [build]
   dockerfile = "Dockerfile"
+
+[env]
+  DB_PATH = "/tmp/prices.db"
+  POST_TO_TELEGRAM = "true"
+  FETCH_EVERY_MINUTES = "15"
 
 [http_service]
   internal_port = 8080
@@ -10,7 +15,3 @@ primary_region = "lhr"
   auto_start_machines = true
   auto_stop_machines = false
   min_machines_running = 1
-
-[mounts]
-  source = "prices_data"
-  destination = "/data"
