@@ -34,15 +34,16 @@ ASSET_TAGS = {
     "CL.F":   ["oil", "wti", "brent", "crude", "opec", "inventory", "refinery", "gasoline", "diesel", "spr"],
 }
 
-# Simple heuristic lexicons (keep small + explainable)
+# Simple heuristic lexicons
 POS_WORDS = [
-    "approval", "approved", "wins", "win", "settles", "settlement", "cuts", "cut", "decline", "falls",
-    "lower inflation", "disinflation", "rate cut", "eases", "stimulus", "support", "bullish", "rally"
+    "approval", "approved", "wins", "win", "settles", "settlement",
+    "cuts", "cut", "decline", "falls",
+    "disinflation", "rate cut", "eases", "stimulus", "support", "bullish", "rally",
 ]
 NEG_WORDS = [
     "lawsuit", "sues", "charge", "charged", "fraud", "ban", "sanction", "crackdown", "probe",
-    "rate hike", "tighten", "tightening", "hawkish", "higher inflation", "inflation rises",
-    "recession", "sell-off", "bearish"
+    "rate hike", "tighten", "tightening", "hawkish",
+    "inflation rises", "recession", "sell-off", "bearish",
 ]
 
 # Commodity-specific hooks
@@ -66,4 +67,89 @@ class NewsItem:
     signal: str  # BUY / SELL / NEUTRAL
 
 
-def _clean(text: str)_
+def _clean(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _hash_guid(*parts: str) -> str:
+    payload = "||".join([p or "" for p in parts])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _score(text: str) -> float:
+    t = text.lower()
+    score = 0.0
+
+    for w in POS_WORDS:
+        if w in t:
+            score += 1.0
+    for w in NEG_WORDS:
+        if w in t:
+            score -= 1.0
+
+    # Extra commodity nuance
+    if any(k in t for k in OIL_BULL):
+        score += 1.5
+    if any(k in t for k in OIL_BEAR):
+        score -= 1.5
+
+    if any(k in t for k in METALS_BULL):
+        score += 1.0
+    if any(k in t for k in METALS_BEAR):
+        score -= 1.0
+
+    return score
+
+
+def _detect_tags(text: str) -> str:
+    t = text.lower()
+    tags = []
+    for sym, keys in ASSET_TAGS.items():
+        if any(k in t for k in keys):
+            tags.append(sym)
+    return ",".join(tags) if tags else "MACRO"
+
+
+def _signal_from_score(score: float, threshold: float) -> str:
+    if score >= threshold:
+        return "BUY"
+    if score <= -threshold:
+        return "SELL"
+    return "NEUTRAL"
+
+
+def fetch_news(threshold: float = 2.0) -> list[NewsItem]:
+    now = datetime.now(timezone.utc)
+    out: list[NewsItem] = []
+
+    for (name, source, url) in FEEDS:
+        d = feedparser.parse(url)
+
+        for e in d.entries[:20]:
+            title = _clean(getattr(e, "title", ""))
+            link = _clean(getattr(e, "link", "")) or None
+            summary = _clean(getattr(e, "summary", "")) or None
+            published = _clean(getattr(e, "published", "")) or None
+
+            guid = _hash_guid(source, title, link or "", published or "")
+
+            combined = f"{title} {summary or ''}".strip()
+            tags = _detect_tags(combined)
+            sc = _score(combined)
+            sig = _signal_from_score(sc, threshold)
+
+            out.append(
+                NewsItem(
+                    guid=guid,
+                    source=f"{source}:{name}",
+                    title=title or "(no title)",
+                    link=link,
+                    summary=summary,
+                    published=published,
+                    tags=tags,
+                    score=sc,
+                    signal=sig,
+                )
+            )
+
+    return out
