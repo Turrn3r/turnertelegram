@@ -8,6 +8,9 @@ primary_region = "ams"
   DB_PATH = "/tmp/prices.db"
   POST_TO_TELEGRAM = "true"
   FETCH_EVERY_MINUTES = "15"
+  NEWS_ALERTS = "true"
+  NEWS_THRESHOLD = "2.5"
+  NEWS_SEND_NEUTRAL = "false"
 
 [http_service]
   internal_port = 8080
