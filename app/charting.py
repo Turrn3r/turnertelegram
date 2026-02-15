@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import mplfinance as mpf
 
 
 @dataclass
@@ -14,7 +14,7 @@ class SeriesData:
     points: list[dict]  # [{"ts": "...", "price": ...}, ...]
 
 
-def _to_df(points: list[dict]) -> pd.DataFrame:
+def _to_line_df(points: list[dict]) -> pd.DataFrame:
     if not points:
         return pd.DataFrame(columns=["ts", "price"])
     df = pd.DataFrame(points)
@@ -24,78 +24,67 @@ def _to_df(points: list[dict]) -> pd.DataFrame:
     return df
 
 
-def ema(series: pd.Series, span: int = 20) -> pd.Series:
-    return series.ewm(span=span, adjust=False).mean()
+def _to_ohlc_df(candles: list[dict]) -> pd.DataFrame:
+    if not candles:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    df = pd.DataFrame(candles)
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    df = df.dropna(subset=["ts", "open", "high", "low", "close"]).sort_values("ts")
+    df = df.set_index("ts")
+    df = df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"})
+    return df[["Open", "High", "Low", "Close", "Volume"]]
 
 
-def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
-
-    roll_up = up.ewm(alpha=1 / period, adjust=False).mean()
-    roll_down = down.ewm(alpha=1 / period, adjust=False).mean()
-
-    rs = roll_up / roll_down.replace(0, np.nan)
-    out = 100 - (100 / (1 + rs))
-    return out.bfill().clip(0, 100)
-
-
-def make_four_panel_chart_png(series_list: list[SeriesData]) -> bytes:
+def make_telegram_chart_png(
+    series_list: list[SeriesData],
+    xrp_candles: list[dict],
+) -> bytes:
     plt.style.use("dark_background")
 
-    n = len(series_list)
-    if n == 0:
-        raise ValueError("No series provided")
+    # Layout: 2x2 grid
+    fig = plt.figure(figsize=(12, 7), dpi=170)
+    gs = fig.add_gridspec(2, 2, hspace=0.35, wspace=0.20)
 
-    fig = plt.figure(figsize=(12, 3.2 * n), dpi=160)
-    gs = fig.add_gridspec(nrows=2 * n, ncols=1, height_ratios=[3, 1] * n, hspace=0.35)
+    # --- XRP candlesticks (top-left)
+    ax_xrp = fig.add_subplot(gs[0, 0])
+    ohlc = _to_ohlc_df(xrp_candles)
 
-    for i, s in enumerate(series_list):
-        df = _to_df(s.points)
-        ax_price = fig.add_subplot(gs[2 * i, 0])
-        ax_rsi = fig.add_subplot(gs[2 * i + 1, 0], sharex=ax_price)
+    if len(ohlc) >= 2:
+        mpf.plot(
+            ohlc,
+            type="candle",
+            ax=ax_xrp,
+            volume=False,
+            style="nightclouds",
+            xrotation=0,
+            show_nontrading=True,
+        )
+        ax_xrp.set_title("XRPUSD (15m Candles)")
+    else:
+        ax_xrp.set_title("XRPUSD (candles collecting…)")
+
+    # --- Other 3 line charts (with markers so flat lines are visible)
+    symbols = {s.symbol: s for s in series_list}
+    for sym, pos in [("XAUUSD", (0, 1)), ("XAGUSD", (1, 0)), ("CL.F", (1, 1))]:
+        ax = fig.add_subplot(gs[pos[0], pos[1]])
+        df = _to_line_df(symbols.get(sym, SeriesData(sym, [])).points)
 
         if df.empty:
-            ax_price.set_title(f"{s.symbol} (no data yet)")
-            ax_price.grid(True, alpha=0.2)
-            ax_rsi.grid(True, alpha=0.2)
+            ax.set_title(f"{sym} (no data yet)")
+            ax.grid(True, alpha=0.2)
             continue
 
-        if df.shape[0] < 2:
-            ax_price.plot(df["ts"], df["price"], marker="o")
-            ax_price.set_title(f"{s.symbol} (collecting…)")
-            ax_price.grid(True, alpha=0.2)
-
-            ax_rsi.set_title("RSI14 (need more data)")
-            ax_rsi.set_ylim(0, 100)
-            ax_rsi.grid(True, alpha=0.2)
-            continue
-
-        df["ema20"] = ema(df["price"], span=20)
-        df["rsi14"] = rsi(df["price"], period=14)
-
-        ax_price.plot(df["ts"], df["price"], linewidth=1.6)
-        ax_price.plot(df["ts"], df["ema20"], linewidth=1.2, linestyle="--")
-        ax_price.set_title(f"{s.symbol} | Price + EMA20")
-        ax_price.grid(True, alpha=0.2)
-
-        ax_rsi.plot(df["ts"], df["rsi14"], linewidth=1.2)
-        ax_rsi.axhline(70, linewidth=0.8, linestyle=":")
-        ax_rsi.axhline(30, linewidth=0.8, linestyle=":")
-        ax_rsi.set_ylim(0, 100)
-        ax_rsi.set_title("RSI14")
-        ax_rsi.grid(True, alpha=0.2)
-
-        for label in ax_price.get_xticklabels():
-            label.set_visible(False)
+        # Always draw with markers so even flat lines show clearly
+        ax.plot(df["ts"], df["price"], marker="o", linewidth=1.6)
+        ax.set_title(f"{sym} (Line)")
+        ax.grid(True, alpha=0.2)
 
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    fig.suptitle(f"TurnerTrading Live Charts — {now}", fontsize=14, y=0.995)
+    fig.suptitle(f"TurnerTrading — Charts — {now}", fontsize=14, y=0.98)
 
     import io
     buf = io.BytesIO()
-    fig.tight_layout(rect=[0, 0, 1, 0.985])
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(buf, format="png")
     plt.close(fig)
     buf.seek(0)
