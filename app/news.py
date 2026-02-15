@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import feedparser
 
@@ -106,7 +105,7 @@ def _signal_from_score(score: float, threshold: float) -> str:
     return "NEUTRAL"
 
 
-def fetch_news(threshold: float = 2.0) -> list[NewsItem]:
+def fetch_news(threshold: float = 2.5) -> list[NewsItem]:
     out: list[NewsItem] = []
 
     for (name, source, url) in FEEDS:
@@ -119,8 +118,8 @@ def fetch_news(threshold: float = 2.0) -> list[NewsItem]:
             published = _clean(getattr(e, "published", "")) or None
 
             guid = _hash_guid(source, title, link or "", published or "")
-
             combined = f"{title} {summary or ''}".strip()
+
             tags = _detect_tags(combined)
             sc = _score(combined)
             sig = _signal_from_score(sc, threshold)
