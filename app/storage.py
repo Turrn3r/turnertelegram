@@ -18,6 +18,23 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol_ts ON price_points(symbol, ts_utc)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS news_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guid TEXT NOT NULL UNIQUE,
+                ts_utc TEXT NOT NULL,
+                source TEXT NOT NULL,
+                title TEXT NOT NULL,
+                link TEXT,
+                summary TEXT,
+                published TEXT,
+                tags TEXT,
+                score REAL NOT NULL,
+                signal TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_news_ts ON news_items(ts_utc)")
         conn.commit()
 
 
@@ -64,7 +81,6 @@ def last_point(symbol: str):
 
 
 def previous_point(symbol: str):
-    # 2nd most recent point (for % change)
     with db() as conn:
         cur = conn.execute(
             "SELECT ts_utc, price FROM price_points WHERE symbol=? ORDER BY ts_utc DESC LIMIT 1 OFFSET 1",
@@ -74,3 +90,43 @@ def previous_point(symbol: str):
     if not row:
         return None
     return {"ts": row[0], "price": float(row[1])}
+
+
+def insert_news_item(
+    guid: str,
+    source: str,
+    title: str,
+    link: str | None,
+    summary: str | None,
+    published: str | None,
+    tags: str | None,
+    score: float,
+    signal: str,
+    ts=None,
+) -> bool:
+    """Returns True if inserted (new), False if duplicate."""
+    ts = ts or datetime.now(timezone.utc)
+    with db() as conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO news_items(guid, ts_utc, source, title, link, summary, published, tags, score, signal)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    guid,
+                    ts.isoformat(),
+                    source,
+                    title,
+                    link,
+                    summary,
+                    published,
+                    tags,
+                    float(score),
+                    signal,
+                ),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
