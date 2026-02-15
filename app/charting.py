@@ -12,7 +12,6 @@ class SeriesData:
 def _to_df(points: list[dict]) -> pd.DataFrame:
     if not points:
         return pd.DataFrame(columns=["ts", "price"])
-
     df = pd.DataFrame(points)
     df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
     df = df.dropna(subset=["ts", "price"]).sort_values("ts")
@@ -22,39 +21,39 @@ def _to_df(points: list[dict]) -> pd.DataFrame:
 def make_telegram_chart_png(series_list: list[SeriesData]) -> bytes:
     plt.style.use("dark_background")
 
-    fig = plt.figure(figsize=(12, 7), dpi=170)
-    gs = fig.add_gridspec(2, 2, hspace=0.35, wspace=0.20)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 7), dpi=170)
+    axes = axes.flatten()
 
-    layout = {
-        "XRPUSD": (0, 0),
-        "XAUUSD": (0, 1),
-        "XAGUSD": (1, 0),
-        "CL.F": (1, 1),
-    }
-
+    layout = ["XRPUSD", "XAUUSD", "XAGUSD", "CL.F"]
     by_sym = {s.symbol: s for s in series_list}
 
-    for sym, (r, c) in layout.items():
-        ax = fig.add_subplot(gs[r, c])
+    for ax, sym in zip(axes, layout):
         df = _to_df(by_sym.get(sym, SeriesData(sym, [])).points)
 
         if df.empty:
             ax.set_title(f"{sym} (no data yet)")
-            ax.grid(True, alpha=0.2)
+            ax.grid(True, alpha=0.25)
             continue
 
-        # Always draw with markers so flat lines are visible
+        # Markers ensure visibility even if the line is flat
         ax.plot(df["ts"], df["price"], marker="o", linewidth=1.6)
         ax.set_title(sym)
-        ax.grid(True, alpha=0.2)
+        ax.grid(True, alpha=0.25)
+
+        # Improve readability: rotate x labels a bit
+        for label in ax.get_xticklabels():
+            label.set_rotation(20)
+            label.set_horizontalalignment("right")
 
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    fig.suptitle(f"TurnerTrading — Charts — {now}", fontsize=14, y=0.98)
+    fig.suptitle(f"TurnerTrading — Charts — {now}", fontsize=14)
 
     import io
     buf = io.BytesIO()
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(buf, format="png")
+
+    # IMPORTANT: do NOT use tight_layout here (it caused the warning & blank-looking images)
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)
+
     buf.seek(0)
     return buf.read()
