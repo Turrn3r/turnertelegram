@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TurnerTrading Live Charts</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; background: #0b0f17; color: #e8eefc; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid #233; border-radius: 14px; padding: 16px; background: rgba(255,255,255,0.03); }
+    .muted { opacity: 0.75; }
+  </style>
+</head>
+<body>
+  <h1>TurnerTrading Live Charts</h1>
+  <p class="muted">Backend refresh: every 15 minutes. Page refresh: every 60 seconds.</p>
+
+  <div class="grid" id="grid"></div>
+
+  <script>
+    const symbols = {{ symbols | tojson }};
+    const charts = {};
+
+    function makeCard(sym) {
+      const grid = document.getElementById("grid");
+      const card = document.createElement("div");
+      card.className = "card";
+      const h = document.createElement("h2");
+      h.textContent = sym;
+      const c = document.createElement("canvas");
+      c.id = `c_${sym}`;
+      card.appendChild(h);
+      card.appendChild(c);
+      grid.appendChild(card);
+      return c;
+    }
+
+    function makeChart(canvas) {
+      return new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: { labels: [], datasets: [{ label: "Price", data: [] }] },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: { legend: { labels: { color: "#e8eefc" } } },
+          scales: {
+            x: { ticks: { color: "#e8eefc" }, grid: { color: "rgba(255,255,255,0.06)" } },
+            y: { ticks: { color: "#e8eefc" }, grid: { color: "rgba(255,255,255,0.06)" } }
+          }
+        }
+      });
+    }
+
+    async function refresh() {
+      const r = await fetch("/api/series?limit=600");
+      const data = await r.json();
+
+      for (const sym of symbols) {
+        if (!charts[sym]) {
+          const canvas = makeCard(sym);
+          charts[sym] = makeChart(canvas);
+        }
+        const series = data[sym] || [];
+        charts[sym].data.labels = series.map(p => new Date(p.ts).toISOString().slice(11,16));
+        charts[sym].data.datasets[0].data = series.map(p => p.price);
+        charts[sym].update();
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 60_000);
+  </script>
+</body>
+</html>
