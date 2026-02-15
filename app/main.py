@@ -10,9 +10,12 @@ from fastapi.requests import Request
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .storage import (
-    init_db, insert_point, last_n_points, last_point, previous_point,
-    upsert_ohlc, last_n_ohlc,
-    insert_news_item
+    init_db,
+    insert_point,
+    last_n_points,
+    last_point,
+    previous_point,
+    insert_news_item,
 )
 from .pricing import fetch_all, SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL
 from .charting import SeriesData, make_telegram_chart_png
@@ -68,48 +71,45 @@ def _emoji(sig: str) -> str:
 
 
 async def job_fetch_and_store() -> None:
-    quotes, candles = await fetch_all()
+    # pricing.fetch_all returns (quotes, candles) in some versions.
+    # This handles both: if only quotes are returned, it still works.
+    res = await fetch_all()
+
+    quotes = []
+    if isinstance(res, tuple) and len(res) >= 1:
+        quotes = res[0]
+    else:
+        quotes = res
+
     now = datetime.now(timezone.utc)
+
+    if not quotes:
+        log.warning("Price fetch returned 0 quotes")
+        return
 
     for q in quotes:
         insert_point(q.symbol, q.price, q.source, ts=now)
 
-    # Store XRP 15m OHLC candles
-    for c in candles:
-        upsert_ohlc(
-            symbol=c.symbol,
-            interval=c.interval,
-            open_time_utc=c.open_time_utc,
-            o=c.open,
-            h=c.high,
-            l=c.low,
-            c=c.close,
-            v=c.volume,
-            source=c.source,
-        )
-
-    log.info("Stored quotes=%d candles=%d", len(quotes), len(candles))
+    log.info("Stored quotes: %s", ", ".join([f"{q.symbol}={q.price}" for q in quotes]))
 
 
 async def job_post_channel_update() -> None:
     if not POST_TO_TELEGRAM:
         return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("Telegram not configured")
+        log.warning("Telegram not configured (missing token or chat id)")
         return
 
-    # Line series for gold/silver/oil + last prices for caption
+    # Build chart from stored points
     series = [SeriesData(symbol=sym, points=last_n_points(sym, limit=HISTORY_POINTS)) for sym in SYMBOLS]
 
-    # Candles for XRP
-    xrp_candles = last_n_ohlc(SYMBOL_XRP, "15m", limit=160)
-
     try:
-        png = make_telegram_chart_png(series, xrp_candles=xrp_candles)
+        png = make_telegram_chart_png(series)
     except Exception as e:
         log.exception("Chart generation failed: %s", e)
         return
 
+    # Caption with last price and change vs previous point
     lines = []
     for sym in SYMBOLS:
         lp = last_point(sym)
@@ -117,6 +117,7 @@ async def job_post_channel_update() -> None:
         if not lp:
             lines.append(f"{sym}: n/a")
             continue
+
         curr = float(lp["price"])
         if pp:
             prev = float(pp["price"])
@@ -130,7 +131,12 @@ async def job_post_channel_update() -> None:
 
     from telegram import Bot
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=png, caption=caption)
+
+    try:
+        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=png, caption=caption)
+        log.info("Posted chart update to Telegram: %s", TELEGRAM_CHAT_ID)
+    except Exception as e:
+        log.exception("Telegram chart post failed: %s", e)
 
 
 async def job_news_alerts() -> None:
@@ -140,9 +146,13 @@ async def job_news_alerts() -> None:
         return
 
     items = fetch_news(threshold=NEWS_THRESHOLD)
+    if not items:
+        return
+
     from telegram import Bot
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
+    sent = 0
     for it in items:
         inserted = insert_news_item(
             guid=it.guid,
@@ -157,6 +167,7 @@ async def job_news_alerts() -> None:
         )
         if not inserted:
             continue
+
         if it.signal == "NEUTRAL" and not NEWS_SEND_NEUTRAL:
             continue
 
@@ -170,12 +181,20 @@ async def job_news_alerts() -> None:
             msg += f"{it.link}\n"
         msg += "\n_Disclaimer: automated headline scoring; not financial advice._"
 
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+        try:
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+            sent += 1
+        except Exception as e:
+            log.exception("Telegram news post failed: %s", e)
+
+    log.info("News job complete. Items=%d Sent=%d", len(items), sent)
 
 
 @app.on_event("startup")
 async def startup():
     init_db()
+
+    # Prime immediately
     await job_fetch_and_store()
 
     scheduler.add_job(job_fetch_and_store, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
@@ -183,7 +202,7 @@ async def startup():
     scheduler.add_job(job_news_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
 
     scheduler.start()
-    log.info("Scheduler started interval=%d chat_id=%s", FETCH_EVERY_MINUTES, TELEGRAM_CHAT_ID)
+    log.info("Scheduler started. Interval=%d minutes. ChatID=%s", FETCH_EVERY_MINUTES, TELEGRAM_CHAT_ID)
 
 
 @app.get("/", response_class=HTMLResponse)
