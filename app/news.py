@@ -7,26 +7,17 @@ from datetime import datetime, timezone
 
 import feedparser
 
-# --- Official / public RSS feeds ---
 FEEDS = [
-    # Federal Reserve (press releases)
     ("Fed Press (All)", "fed", "https://www.federalreserve.gov/feeds/press_all.xml"),
     ("Fed Press (Monetary)", "fed", "https://www.federalreserve.gov/feeds/press_monetary.xml"),
-
-    # Bank of England
     ("BoE News", "boe", "https://www.bankofengland.co.uk/rss/news"),
     ("BoE Publications", "boe", "https://www.bankofengland.co.uk/rss/publications"),
-
-    # EIA (energy) – useful for Oil
     ("EIA Press", "eia", "https://www.eia.gov/rss/press_rss.xml"),
     ("EIA Gas/Diesel", "eia", "https://www.eia.gov/rss/gasoline.xml"),
-
-    # CFTC (regulatory / enforcement)
     ("CFTC General PR", "cftc", "https://www.cftc.gov/RSS/RSSGP/rssgp.xml"),
     ("CFTC Enforcement PR", "cftc", "https://www.cftc.gov/RSS/RSSENF/rssenf.xml"),
 ]
 
-# Map sources/keywords to assets
 ASSET_TAGS = {
     "XRPUSD": ["xrp", "ripple", "sec", "etf", "crypto", "stablecoin", "digital asset"],
     "XAUUSD": ["gold", "xau", "bullion", "precious metal", "inflation", "real yields", "safe haven"],
@@ -34,7 +25,6 @@ ASSET_TAGS = {
     "CL.F":   ["oil", "wti", "brent", "crude", "opec", "inventory", "refinery", "gasoline", "diesel", "spr"],
 }
 
-# Simple heuristic lexicons
 POS_WORDS = [
     "approval", "approved", "wins", "win", "settles", "settlement",
     "cuts", "cut", "decline", "falls",
@@ -46,7 +36,6 @@ NEG_WORDS = [
     "inflation rises", "recession", "sell-off", "bearish",
 ]
 
-# Commodity-specific hooks
 OIL_BULL = ["inventory draw", "inventories fall", "supply cut", "opec cut", "disruption", "pipeline outage"]
 OIL_BEAR = ["inventory build", "inventories rise", "demand weakness", "oversupply", "production increase"]
 
@@ -87,7 +76,6 @@ def _score(text: str) -> float:
         if w in t:
             score -= 1.0
 
-    # Extra commodity nuance
     if any(k in t for k in OIL_BULL):
         score += 1.5
     if any(k in t for k in OIL_BEAR):
@@ -119,7 +107,6 @@ def _signal_from_score(score: float, threshold: float) -> str:
 
 
 def fetch_news(threshold: float = 2.0) -> list[NewsItem]:
-    now = datetime.now(timezone.utc)
     out: list[NewsItem] = []
 
     for (name, source, url) in FEEDS:
