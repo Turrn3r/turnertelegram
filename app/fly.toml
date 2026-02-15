@@ -1,4 +1,4 @@
-app = "YOUR_FLY_APP_NAME"
+app = "turnertelegram"
 primary_region = "lhr"
 
 [build]
