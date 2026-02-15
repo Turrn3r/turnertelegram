@@ -4,10 +4,11 @@ from typing import Optional
 
 import httpx
 
+# Canonical symbols used everywhere in DB/UI
 SYMBOL_XRP = "XRPUSD"
 SYMBOL_GOLD = "XAUUSD"
 SYMBOL_SILVER = "XAGUSD"
-SYMBOL_OIL = "CL.F"
+SYMBOL_OIL = "CL.F"   # Stooq uses CL.F for WTI crude futures
 
 @dataclass
 class Quote:
@@ -27,7 +28,6 @@ async def fetch_xrp_usd(client: httpx.AsyncClient) -> Quote:
 
 
 async def fetch_stooq_last(client: httpx.AsyncClient, stooq_symbol: str) -> Optional[Quote]:
-    # Stooq CSV: Symbol,Date,Time,Last
     url = "https://stooq.com/q/l/"
     params = {"s": stooq_symbol.lower(), "f": "sd2t2l", "h": "", "e": "csv"}
     r = await client.get(url, params=params, timeout=20)
@@ -45,11 +45,13 @@ async def fetch_stooq_last(client: httpx.AsyncClient, stooq_symbol: str) -> Opti
     if last in ("", "N/A"):
         return None
 
-    return Quote(symbol=stooq_symbol.upper(), price=float(last), source="stooq")
+    # Force canonical storage key (prevents mismatches)
+    canonical = stooq_symbol.upper()
+    return Quote(symbol=canonical, price=float(last), source="stooq")
 
 
 async def fetch_all() -> list[Quote]:
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertrading-charts/1.0"}) as client:
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
         tasks = [
             fetch_xrp_usd(client),
             fetch_stooq_last(client, SYMBOL_GOLD),
@@ -65,5 +67,4 @@ async def fetch_all() -> list[Quote]:
         if r is None:
             continue
         quotes.append(r)
-
     return quotes
