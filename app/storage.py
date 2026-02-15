@@ -19,6 +19,24 @@ def init_db():
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol_ts ON price_points(symbol, ts_utc)")
 
+        # OHLC candles (used for XRP candlesticks)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ohlc_points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL,
+                open_time_utc TEXT NOT NULL,
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume REAL,
+                source TEXT NOT NULL,
+                UNIQUE(symbol, interval, open_time_utc)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ohlc ON ohlc_points(symbol, interval, open_time_utc)")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS news_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +110,55 @@ def previous_point(symbol: str):
     return {"ts": row[0], "price": float(row[1])}
 
 
+def upsert_ohlc(
+    symbol: str,
+    interval: str,
+    open_time_utc: str,
+    o: float,
+    h: float,
+    l: float,
+    c: float,
+    v: float | None,
+    source: str,
+) -> None:
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO ohlc_points(symbol, interval, open_time_utc, open, high, low, close, volume, source)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (symbol, interval, open_time_utc, float(o), float(h), float(l), float(c), float(v) if v is not None else None, source),
+        )
+        conn.commit()
+
+
+def last_n_ohlc(symbol: str, interval: str, limit: int = 200):
+    with db() as conn:
+        cur = conn.execute(
+            """
+            SELECT open_time_utc, open, high, low, close, volume
+            FROM ohlc_points
+            WHERE symbol=? AND interval=?
+            ORDER BY open_time_utc DESC
+            LIMIT ?
+            """,
+            (symbol, interval, limit),
+        )
+        rows = cur.fetchall()
+    rows.reverse()
+    return [
+        {
+            "ts": r[0],
+            "open": float(r[1]),
+            "high": float(r[2]),
+            "low": float(r[3]),
+            "close": float(r[4]),
+            "volume": float(r[5]) if r[5] is not None else None,
+        }
+        for r in rows
+    ]
+
+
 def insert_news_item(
     guid: str,
     source: str,
@@ -104,7 +171,6 @@ def insert_news_item(
     signal: str,
     ts=None,
 ) -> bool:
-    """Returns True if inserted (new), False if duplicate."""
     ts = ts or datetime.now(timezone.utc)
     with db() as conn:
         try:
@@ -113,18 +179,7 @@ def insert_news_item(
                 INSERT INTO news_items(guid, ts_utc, source, title, link, summary, published, tags, score, signal)
                 VALUES(?,?,?,?,?,?,?,?,?,?)
                 """,
-                (
-                    guid,
-                    ts.isoformat(),
-                    source,
-                    title,
-                    link,
-                    summary,
-                    published,
-                    tags,
-                    float(score),
-                    signal,
-                ),
+                (guid, ts.isoformat(), source, title, link, summary, published, tags, float(score), signal),
             )
             conn.commit()
             return True
