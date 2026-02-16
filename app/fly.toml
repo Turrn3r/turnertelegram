@@ -5,14 +5,24 @@ primary_region = "ams"
   dockerfile = "Dockerfile"
 
 [env]
-  DB_PATH = "/tmp/prices.db"
-  POST_TO_TELEGRAM = "true"
+  # Prefer /data if you later mount a Fly volume there, otherwise it’ll fall back to /tmp
+  DB_PATH = "/data/prices.db"
   FETCH_EVERY_MINUTES = "15"
 
+  POST_TO_TELEGRAM = "true"
+
+  # Candle settings
+  CANDLE_INTERVAL = "15min"
+  CANDLE_LOOKBACK = "8days"       # how much candle history to keep locally for charting
+  HISTORY_CANDLES = "300"         # how many candles to plot per chart
+
+  # News
   NEWS_ALERTS = "true"
   NEWS_THRESHOLD = "2.5"
   NEWS_SEND_NEUTRAL = "false"
+  NEWS_MAX_PER_CYCLE = "8"
 
+  # Optional: Flow alerts (Binance aggTrades proxy)
   FLOW_ALERTS = "true"
   FLOW_NOTIONAL_THRESHOLD_USD = "250000"
 
