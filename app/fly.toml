@@ -44,3 +44,10 @@ primary_region = "ams"
   auto_start_machines = true
   auto_stop_machines = false
   min_machines_running = 1
+
+  # Prevent heavy work during boot
+  RUN_ON_STARTUP = "false"
+
+  # Memory-safe chart settings (raise only if you increase RAM)
+  CHART_BARS = "220"
+  CHART_DPI = "240"
