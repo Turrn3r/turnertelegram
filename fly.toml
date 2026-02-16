@@ -32,3 +32,16 @@ primary_region = "ams"
   auto_start_machines = true
   auto_stop_machines = false
   min_machines_running = 1
+
+  ORDERBOOK_ALERTS = "true"
+  OB_IMBALANCE_THRESHOLD = "0.22"
+  OB_SPREAD_BPS_THRESHOLD = "8"
+  OB_WALL_USD_THRESHOLD = "350000"
+
+  # Branding overrides to match turrner.com (set to exact hex values)
+  # BRAND_BG = "#0b0f14"
+  # BRAND_GRID = "#243042"
+  # BRAND_TEXT = "#cfd6e6"
+  # BRAND_UP = "#2de37a"
+  # BRAND_DOWN = "#ff4d4d"
+  # BRAND_ACCENT = "#8ea0ff"
