@@ -5,26 +5,38 @@ primary_region = "ams"
   dockerfile = "Dockerfile"
 
 [env]
-  # Prefer /data if you later mount a Fly volume there, otherwise it’ll fall back to /tmp
   DB_PATH = "/data/prices.db"
   FETCH_EVERY_MINUTES = "15"
 
   POST_TO_TELEGRAM = "true"
 
-  # Candle settings
-  CANDLE_INTERVAL = "15min"
-  CANDLE_LOOKBACK = "8days"       # how much candle history to keep locally for charting
-  HISTORY_CANDLES = "300"         # how many candles to plot per chart
+  # Candles
+  CANDLE_INTERVAL_PRIMARY = "15min"
+  CANDLE_INTERVALS_CONTEXT = "1h,4h"
+  HISTORY_CANDLES = "320"
 
   # News
   NEWS_ALERTS = "true"
   NEWS_THRESHOLD = "2.5"
   NEWS_SEND_NEUTRAL = "false"
-  NEWS_MAX_PER_CYCLE = "8"
+  NEWS_MAX_PER_CYCLE = "10"
 
-  # Optional: Flow alerts (Binance aggTrades proxy)
+  # Order book / flow proxies
   FLOW_ALERTS = "true"
   FLOW_NOTIONAL_THRESHOLD_USD = "250000"
+
+  ORDERBOOK_ALERTS = "true"
+  OB_IMBALANCE_THRESHOLD = "0.22"
+  OB_SPREAD_BPS_THRESHOLD = "8"
+  OB_WALL_USD_THRESHOLD = "350000"
+
+  # Branding (set these to match turrner.com exactly)
+  BRAND_BG = "#0b0f14"
+  BRAND_GRID = "#243042"
+  BRAND_TEXT = "#cfd6e6"
+  BRAND_UP = "#2de37a"
+  BRAND_DOWN = "#ff4d4d"
+  BRAND_ACCENT = "#8ea0ff"
 
 [http_service]
   internal_port = 8080
@@ -32,16 +44,3 @@ primary_region = "ams"
   auto_start_machines = true
   auto_stop_machines = false
   min_machines_running = 1
-
-  ORDERBOOK_ALERTS = "true"
-  OB_IMBALANCE_THRESHOLD = "0.22"
-  OB_SPREAD_BPS_THRESHOLD = "8"
-  OB_WALL_USD_THRESHOLD = "350000"
-
-  # Branding overrides to match turrner.com (set to exact hex values)
-  # BRAND_BG = "#0b0f14"
-  # BRAND_GRID = "#243042"
-  # BRAND_TEXT = "#cfd6e6"
-  # BRAND_UP = "#2de37a"
-  # BRAND_DOWN = "#ff4d4d"
-  # BRAND_ACCENT = "#8ea0ff"
