@@ -13,10 +13,13 @@ class OrderBookSignal:
     spread_bps: float
     bid_depth_usd: float
     ask_depth_usd: float
-    imbalance: float  # (bid-ask)/(bid+ask) [-1,1]
-    top_wall_side: str  # BID/ASK/NONE
+    imbalance: float
+    top_wall_side: str
     top_wall_usd: float
     top_wall_price: float
+    # delta vs last snapshot
+    delta_bid_depth_usd: float
+    delta_ask_depth_usd: float
 
 
 async def fetch_binance_depth(client: httpx.AsyncClient, symbol: str = "XRPUSDT", limit: int = 1000) -> dict:
@@ -37,7 +40,13 @@ def _to_levels(levels: list[list[str]]) -> list[tuple[float, float]]:
     return out
 
 
-def analyze_depth(depth: dict, symbol: str = "XRPUSDT", depth_pct_band: float = 0.0025, wall_usd_threshold: float = 350_000.0) -> Optional[OrderBookSignal]:
+def analyze_depth(
+    depth: dict,
+    symbol: str = "XRPUSDT",
+    depth_pct_band: float = 0.0025,
+    wall_usd_threshold: float = 350_000.0,
+    prev: Optional["OrderBookSignal"] = None,
+) -> Optional[OrderBookSignal]:
     bids = _to_levels(depth.get("bids") or [])
     asks = _to_levels(depth.get("asks") or [])
     if not bids or not asks:
@@ -90,5 +99,19 @@ def analyze_depth(depth: dict, symbol: str = "XRPUSDT", depth_pct_band: float = 
             top_wall_usd = top_ask_wall[0]
             top_wall_price = top_ask_wall[1]
 
-    return OrderBookSignal(symbol=symbol, mid=mid, spread_bps=spread_bps, bid_depth_usd=bid_depth_usd, ask_depth_usd=ask_depth_usd,
-                           imbalance=imbalance, top_wall_side=top_wall_side, top_wall_usd=top_wall_usd, top_wall_price=top_wall_price)
+    delta_bid = bid_depth_usd - (prev.bid_depth_usd if prev else 0.0)
+    delta_ask = ask_depth_usd - (prev.ask_depth_usd if prev else 0.0)
+
+    return OrderBookSignal(
+        symbol=symbol,
+        mid=mid,
+        spread_bps=spread_bps,
+        bid_depth_usd=bid_depth_usd,
+        ask_depth_usd=ask_depth_usd,
+        imbalance=imbalance,
+        top_wall_side=top_wall_side,
+        top_wall_usd=top_wall_usd,
+        top_wall_price=top_wall_price,
+        delta_bid_depth_usd=delta_bid,
+        delta_ask_depth_usd=delta_ask,
+    )
