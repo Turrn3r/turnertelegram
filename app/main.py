@@ -273,7 +273,7 @@ async def job_orderbook_alerts() -> None:
     )
     if wall:
         msg += f"• *Wall:* `{sig.top_wall_side}` `{_fmt_notional(sig.top_wall_usd)}` @ `{sig.top_wall_price:.4f}`\n"
-    msg += "\n_Proxy of institutional behavior via liquidity/flow; not identity attribution._"
+    msg += ""
 
     try:
         bot = await _bot()
