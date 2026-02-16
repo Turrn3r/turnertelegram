@@ -9,8 +9,23 @@ from fastapi.requests import Request
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from .storage import init_db, insert_point, last_n_points, last_point, previous_point, insert_news_item
-from .pricing import fetch_all, SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL
+from .storage import (
+    init_db,
+    insert_flow_event,
+    insert_news_item,
+    insert_point,
+    last_n_points,
+    last_point,
+    previous_point,
+)
+from .pricing import (
+    SYMBOL_GOLD,
+    SYMBOL_OIL,
+    SYMBOL_SILVER,
+    SYMBOL_XRP,
+    fetch_all,
+    fetch_large_xrp_trades,
+)
 from .charting import SeriesData, make_telegram_chart_png
 from .news import fetch_news
 
@@ -27,6 +42,9 @@ HISTORY_POINTS = int(os.getenv("HISTORY_POINTS", "288"))
 NEWS_ALERTS = os.getenv("NEWS_ALERTS", "true").lower() in ("1", "true", "yes", "y")
 NEWS_THRESHOLD = float(os.getenv("NEWS_THRESHOLD", "2.5"))
 NEWS_SEND_NEUTRAL = os.getenv("NEWS_SEND_NEUTRAL", "false").lower() in ("1", "true", "yes", "y")
+
+FLOW_ALERTS = os.getenv("FLOW_ALERTS", "true").lower() in ("1", "true", "yes", "y")
+FLOW_NOTIONAL_THRESHOLD_USD = float(os.getenv("FLOW_NOTIONAL_THRESHOLD_USD", "250000"))
 
 SYMBOLS = [SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL]
 
@@ -56,6 +74,16 @@ def _pct_change(curr: float, prev: float) -> float:
 
 def _emoji(sig: str) -> str:
     return {"BUY": "🟢", "SELL": "🔴", "NEUTRAL": "🟡"}.get(sig, "🟡")
+
+
+def _fmt_notional(value: float) -> str:
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.2f}B"
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    if value >= 1_000:
+        return f"${value / 1_000:.1f}K"
+    return f"${value:,.0f}"
 
 async def job_fetch_and_store() -> None:
     quotes = await fetch_all()
@@ -112,6 +140,58 @@ async def job_post_channel_update() -> None:
         log.info("Posted chart update to Telegram: %s", TELEGRAM_CHAT_ID)
     except Exception as e:
         log.exception("Telegram chart post failed: %s", e)
+
+
+
+async def job_flow_alerts() -> None:
+    if not (POST_TO_TELEGRAM and FLOW_ALERTS):
+        return
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    from telegram import Bot
+
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+    import httpx
+
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
+        events = await fetch_large_xrp_trades(client, min_notional_usd=FLOW_NOTIONAL_THRESHOLD_USD)
+
+    sent = 0
+    for ev in events:
+        inserted = insert_flow_event(
+            event_id=ev.event_id,
+            symbol=ev.symbol,
+            side=ev.side,
+            price=ev.price,
+            quantity=ev.quantity,
+            notional_usd=ev.notional_usd,
+            source=ev.source,
+            ts=ev.ts_utc,
+        )
+        if not inserted:
+            continue
+
+        direction = "🟢 BUY pressure" if ev.side == "BUY" else "🔴 SELL pressure"
+        msg = (
+            "🐋 *High-Interest XRP Flow Alert*\n"
+            f"*Signal:* {direction}\n"
+            f"*Notional:* `{_fmt_notional(ev.notional_usd)}`\n"
+            f"*Price:* `{_fmt_price(ev.symbol, ev.price)}`\n"
+            f"*Size:* `{ev.quantity:,.0f} XRP`\n"
+            "*Source:* `Binance aggregated tape`\n\n"
+            "_This is a large-flow proxy for institutional/hedge-fund interest, not identified account-level data._"
+        )
+
+        try:
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+            sent += 1
+        except Exception as e:
+            log.exception("Telegram flow post failed: %s", e)
+
+    if events:
+        log.info("Flow job complete. scanned=%d sent=%d threshold=%s", len(events), sent, FLOW_NOTIONAL_THRESHOLD_USD)
 
 async def job_news_alerts() -> None:
     if not (POST_TO_TELEGRAM and NEWS_ALERTS):
@@ -170,6 +250,7 @@ async def startup():
     scheduler.add_job(job_fetch_and_store, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
     scheduler.add_job(job_post_channel_update, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
     scheduler.add_job(job_news_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
+    scheduler.add_job(job_flow_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
 
     scheduler.start()
     log.info("Scheduler started interval=%d chat_id=%s", FETCH_EVERY_MINUTES, TELEGRAM_CHAT_ID)
