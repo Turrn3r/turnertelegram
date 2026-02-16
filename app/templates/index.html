@@ -7,18 +7,29 @@
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
       code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
+      .ok { color: #0a7; font-weight: 700; }
+      .bad { color: #c22; font-weight: 700; }
     </style>
   </head>
   <body>
     <h1>TurnerTelegram</h1>
+
+    <p>Interval: <code>{{ interval }}</code></p>
+    <p>Telegram configured: {% if telegram %}<span class="ok">YES</span>{% else %}<span class="bad">NO</span>{% endif %}</p>
     <p>Health: <code>/health</code></p>
-    <p>Series: <code>/api/series</code></p>
-    <p>Chart: <code>/debug/chart.png</code></p>
+
     <h2>Symbols</h2>
     <ul>
       {% for s in symbols %}
-        <li>{{ s }}</li>
+        <li><code>{{ s }}</code></li>
       {% endfor %}
+    </ul>
+
+    <h2>Notes</h2>
+    <ul>
+      <li>Charts are sent individually to Telegram every cycle.</li>
+      <li>News sources are official/institutional RSS feeds; alerts are deduped in SQLite.</li>
+      <li>Set secrets in Fly: <code>TWELVEDATA_API_KEY</code>, <code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_CHAT_ID</code>.</li>
     </ul>
   </body>
 </html>
