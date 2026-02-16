@@ -15,7 +15,7 @@ from telegram import Bot
 import httpx
 import pandas as pd
 
-from .twelvedata import SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL, fetch_time_series, resolve_instrument
+from .twelvedata import SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, fetch_time_series
 from .charting import CandleSeries, make_candlestick_png
 from .orderbook import fetch_binance_depth, analyze_depth, OrderBookSignal
 from .analytics import structure_summary
@@ -40,7 +40,7 @@ HAS_TELEGRAM = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and POST_TO_TELEGRAM
 
 FETCH_EVERY_MINUTES = int(os.getenv("FETCH_EVERY_MINUTES", "15"))
 
-# REQUIREMENT: 1-minute candles over last 15 minutes
+# Requirement: 1-minute candles over last 15 minutes
 PRIMARY_INTERVAL = "1min"
 PLOT_WINDOW_MINUTES = int(os.getenv("PLOT_WINDOW_MINUTES", "15"))      # plot only last 15 1m candles
 ANALYSIS_LOOKBACK_1M = int(os.getenv("ANALYSIS_LOOKBACK_1M", "240"))   # use 4h 1m candles for pivots/structure
@@ -54,12 +54,12 @@ OB_DEPTH_DELTA_USD = float(os.getenv("OB_DEPTH_DELTA_USD", "250000"))  # sudden 
 
 SEND_SYMBOL_ERRORS = os.getenv("SEND_SYMBOL_ERRORS", "true").lower() in ("1", "true", "yes", "y")
 
-SYMBOLS = [SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL]
+# ✅ OIL REMOVED
+SYMBOLS = [SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER]
 LABELS = {
     SYMBOL_XRP: "XRP / USD",
     SYMBOL_GOLD: "Gold (XAU) / USD",
     SYMBOL_SILVER: "Silver (XAG) / USD",
-    SYMBOL_OIL: "Crude Oil (WTI/Brent via TwelveData)",
 }
 
 _last_ob: OrderBookSignal | None = None  # in-memory previous snapshot for delta detection
@@ -309,15 +309,5 @@ async def health():
         "interval": PRIMARY_INTERVAL,
         "plot_window_minutes": PLOT_WINDOW_MINUTES,
         "analysis_lookback_1m": ANALYSIS_LOOKBACK_1M,
+        "symbols": [LABELS.get(s, s) for s in SYMBOLS],
     }
-
-
-@app.get("/debug/oil")
-async def debug_oil():
-    """
-    Shows what TwelveData instrument is currently resolved for oil,
-    and the resolved symbol/exchange (after probing).
-    """
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/debug"}) as client:
-        sym, exc = await resolve_instrument(client, SYMBOL_OIL)
-        return {"resolved_oil": {"symbol": sym, "exchange": exc}}
