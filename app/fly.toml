@@ -1,24 +1,24 @@
+app = "turnertelegram"
+primary_region = "ams"
 
- app = "turnertelegram"
- primary_region = "ams"
- 
- [build]
-   dockerfile = "Dockerfile"
- 
- [env]
-   DB_PATH = "/tmp/prices.db"
-   POST_TO_TELEGRAM = "true"
-   FETCH_EVERY_MINUTES = "15"
-+  TWELVEDATA_API_KEY = "9a22a4eeebfc4d28bb7e09a841cc20d3"
-   NEWS_ALERTS = "true"
-   NEWS_THRESHOLD = "2.5"
-   NEWS_SEND_NEUTRAL = "false"
-+  FLOW_ALERTS = "true"
-+  FLOW_NOTIONAL_THRESHOLD_USD = "250000"
- 
- [http_service]
-   internal_port = 8080
-   force_https = true
-   auto_start_machines = true
-   auto_stop_machines = false
-   min_machines_running = 1
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DB_PATH = "/tmp/prices.db"
+  POST_TO_TELEGRAM = "true"
+  FETCH_EVERY_MINUTES = "15"
+
+  NEWS_ALERTS = "true"
+  NEWS_THRESHOLD = "2.5"
+  NEWS_SEND_NEUTRAL = "false"
+
+  FLOW_ALERTS = "true"
+  FLOW_NOTIONAL_THRESHOLD_USD = "250000"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_start_machines = true
+  auto_stop_machines = false
+  min_machines_running = 1
