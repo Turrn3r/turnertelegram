@@ -1,97 +1,78 @@
 from __future__ import annotations
 
-# IMPORTANT: Force headless backend for Fly/Docker
-import matplotlib
-matplotlib.use("Agg")  # must be before importing pyplot
-
-from dataclasses import dataclass
-from datetime import datetime
 import io
+from dataclasses import dataclass
+
+import matplotlib
+matplotlib.use("Agg")
 
 import pandas as pd
-import matplotlib.pyplot as plt
+import mplfinance as mpf
 
 
 @dataclass
-class SeriesData:
+class CandleSeries:
     symbol: str
-    points: list[dict]  # [{"ts": "...", "price": ...}, ...]
+    candles: list[dict]  # [{t,open,high,low,close,volume?}, ...]
 
 
-def _to_df(points: list[dict]) -> pd.DataFrame:
-    if not points:
-        return pd.DataFrame(columns=["ts", "price"])
+def _to_df(candles: list[dict]) -> pd.DataFrame:
+    if not candles:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
 
-    df = pd.DataFrame(points)
-    # Parse timestamps robustly
-    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
-    df = df.dropna(subset=["ts", "price"]).sort_values("ts")
-    df["price"] = pd.to_numeric(df["price"], errors="coerce")
-    df = df.dropna(subset=["price"])
+    df = pd.DataFrame(candles)
+    df["t"] = pd.to_datetime(df["t"], utc=True, errors="coerce")
+    df = df.dropna(subset=["t", "open", "high", "low", "close"]).sort_values("t")
+
+    df = df.set_index("t")
+    df = df.rename(
+        columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume",
+        }
+    )
+    # Ensure numeric
+    for col in ["Open", "High", "Low", "Close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "Volume" in df.columns:
+        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
+
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
     return df
 
 
-def _fmt(sym: str, px: float) -> str:
-    return f"{px:,.4f}" if sym == "XRPUSD" else f"{px:,.2f}"
+def make_candlestick_png(series: CandleSeries, title: str, show_volume: bool = False) -> bytes:
+    df = _to_df(series.candles)
 
+    if df.empty:
+        # create a minimal png if no data
+        import matplotlib.pyplot as plt
 
-def make_telegram_chart_png(series_list: list[SeriesData]) -> bytes:
-    # Bright background so Telegram previews don’t look “blank”
-    fig, axes = plt.subplots(2, 2, figsize=(12, 7), dpi=180)
-    fig.patch.set_facecolor("white")
-    axes = axes.flatten()
-
-    # Match the symbols you're storing
-    layout = ["XRPUSD", "GC.F", "SI.F", "CL.F"]
-    by_sym = {s.symbol: s for s in series_list}
-
-    for ax, sym in zip(axes, layout):
-        ax.set_facecolor("white")
-        ax.grid(True, alpha=0.25)
-        ax.set_title(sym)
-
-        df = _to_df(by_sym.get(sym, SeriesData(sym, [])).points)
-
-        if df.empty:
-            ax.text(0.5, 0.5, "NO DATA", ha="center", va="center", fontsize=18)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            continue
-
-        if len(df) == 1:
-            px = float(df["price"].iloc[0])
-            ax.scatter(df["ts"], df["price"], s=120)
-            ax.text(
-                0.5, 0.5, _fmt(sym, px),
-                transform=ax.transAxes,
-                ha="center", va="center",
-                fontsize=24, fontweight="bold",
-            )
-            ax.set_xticks([])
-            continue
-
-        # Always draw thick + markers so flat series still shows
-        ax.plot(df["ts"], df["price"], marker="o", markersize=5, linewidth=2.6)
-
-        ymin = float(df["price"].min())
-        ymax = float(df["price"].max())
-        if ymin == ymax:
-            pad = max(0.001 * ymin, 0.01)
-            ax.set_ylim(ymin - pad, ymax + pad)
-        else:
-            # small padding for visibility
-            pad = (ymax - ymin) * 0.08
-            ax.set_ylim(ymin - pad, ymax + pad)
-
-        for label in ax.get_xticklabels():
-            label.set_rotation(20)
-            label.set_horizontalalignment("right")
-
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    fig.suptitle(f"TurnerTrading — Charts — {now}", fontsize=14)
+        fig = plt.figure(figsize=(10, 6), dpi=160)
+        ax = fig.add_subplot(111)
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "NO DATA", ha="center", va="center", fontsize=24)
+        ax.axis("off")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.35)
+        plt.close(fig)
+        buf.seek(0)
+        return buf.read()
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.35)
-    plt.close(fig)
+    mpf.plot(
+        df,
+        type="candle",
+        style="yahoo",
+        title=title,
+        ylabel="Price",
+        volume=show_volume and ("Volume" in df.columns),
+        mav=(9, 21),
+        tight_layout=True,
+        savefig=dict(fname=buf, dpi=160, bbox_inches="tight", pad_inches=0.35),
+    )
     buf.seek(0)
     return buf.read()
