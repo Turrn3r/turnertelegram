@@ -28,18 +28,12 @@ SUPPORTED_INTERVALS = {"1min", "5min", "15min", "30min", "45min", "1h", "2h", "4
 
 @dataclass
 class Candle:
-    t: str  # ISO timestamp
+    t: str  # ISO-like timestamp
     open: float
     high: float
     low: float
     close: float
     volume: Optional[float] = None
-
-
-def _iso_utc(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
 
 
 def assert_configured() -> None:
@@ -56,7 +50,6 @@ async def fetch_time_series(
     assert_configured()
     if interval not in SUPPORTED_INTERVALS:
         raise ValueError(f"Unsupported interval '{interval}'")
-
     td_symbol = TD_SYMBOLS.get(app_symbol)
     if not td_symbol:
         raise ValueError(f"Unknown symbol '{app_symbol}'")
@@ -75,18 +68,15 @@ async def fetch_time_series(
     r.raise_for_status()
     data = r.json()
 
-    if "status" in data and data["status"] == "error":
-        # common: rate limit, invalid key, symbol not permitted on plan
+    if data.get("status") == "error":
         raise RuntimeError(f"TwelveData error: {data.get('message', 'unknown')}")
 
     values = data.get("values") or []
     candles: list[Candle] = []
     for row in reversed(values):  # oldest->newest
-        # TwelveData returns "datetime" string in exchange timezone; treat as UTC-ish for charting
         dt_str = row.get("datetime")
         if not dt_str:
             continue
-        # Normalize to ISO-like string (no conversion — TD timezone can vary by symbol)
         t = dt_str.replace(" ", "T")
         if "Z" not in t and "+" not in t:
             t = t + "Z"
