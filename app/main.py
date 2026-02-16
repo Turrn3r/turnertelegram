@@ -8,9 +8,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 from telegram import Bot
-
 import httpx
 
 from .storage import init_db, upsert_candle, get_last_candles, insert_news_item, insert_flow_event
@@ -36,7 +34,7 @@ TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID", "") or "").strip()
 POST_TO_TELEGRAM = os.getenv("POST_TO_TELEGRAM", "true").lower() in ("1", "true", "yes", "y")
 
 FETCH_EVERY_MINUTES = int(os.getenv("FETCH_EVERY_MINUTES", "15"))
-CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "15min")
+CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "15min").strip()
 HISTORY_CANDLES = int(os.getenv("HISTORY_CANDLES", "300"))
 
 NEWS_ALERTS = os.getenv("NEWS_ALERTS", "true").lower() in ("1", "true", "yes", "y")
@@ -59,6 +57,18 @@ SYMBOL_LABELS = {
 HAS_TELEGRAM = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and POST_TO_TELEGRAM)
 
 
+def _interval_human(interval: str) -> str:
+    # Make it human: "15min" -> "15-minute timeframe"
+    s = interval.strip().lower()
+    if s.endswith("min"):
+        n = s.replace("min", "").strip()
+        if n.isdigit():
+            return f"{n}-minute timeframe"
+    if s.endswith("h"):
+        return f"{s} timeframe"
+    return f"{interval} timeframe"
+
+
 def _pct(a: float, b: float) -> float:
     if b == 0:
         return 0.0
@@ -66,7 +76,6 @@ def _pct(a: float, b: float) -> float:
 
 
 def _fmt_price(sym: str, px: float) -> str:
-    # XRP often wants more decimals
     return f"{px:,.4f}" if sym == SYMBOL_XRP else f"{px:,.2f}"
 
 
@@ -90,14 +99,17 @@ async def _bot() -> Bot:
 
 async def job_fetch_candles_and_post_charts() -> None:
     """
-    Main cycle:
-      1) Pull latest 15min candles for each symbol from TwelveData
-      2) Upsert candles into SQLite
-      3) Render & post 1 chart per symbol (4 messages)
+    Every cycle:
+      - Pull OHLC candles from TwelveData (15min timeframe)
+      - Upsert into DB
+      - Post 1 dark-theme candlestick chart per symbol (4 posts)
     """
-    log.info("Cycle start: candles interval=%s history=%d", CANDLE_INTERVAL, HISTORY_CANDLES)
+    human_tf = _interval_human(CANDLE_INTERVAL)
+    log.info("Cycle start: interval=%s (%s) candles=%d", CANDLE_INTERVAL, human_tf, HISTORY_CANDLES)
 
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/2.0"}) as client:
         for sym in SYMBOLS:
             try:
                 candles = await fetch_time_series(client, sym, interval=CANDLE_INTERVAL, outputsize=HISTORY_CANDLES)
@@ -121,9 +133,8 @@ async def job_fetch_candles_and_post_charts() -> None:
             if not HAS_TELEGRAM:
                 continue
 
-            # Pull back from DB to ensure plot is from the stored dataset
             series = get_last_candles(sym, CANDLE_INTERVAL, limit=HISTORY_CANDLES)
-            if len(series) < 2:
+            if len(series) < 5:
                 log.warning("Not enough candles for %s yet", sym)
                 continue
 
@@ -133,16 +144,30 @@ async def job_fetch_candles_and_post_charts() -> None:
             prev_close = float(prev["close"])
             pct = _pct(close, prev_close)
 
-            title = f"{SYMBOL_LABELS.get(sym, sym)} — {CANDLE_INTERVAL} Candles"
-            png = make_candlestick_png(CandleSeries(symbol=sym, candles=series), title=title, show_volume=False)
-
+            # Make the title “human pattern recognition” friendly:
+            # - symbol big & clear
+            # - timeframe explicit
+            # - include last update time
             arrow = "🟢" if pct >= 0 else "🔴"
+            title = f"{SYMBOL_LABELS.get(sym, sym)} — {human_tf}"
+            subtitle = f"Close {_fmt_price(sym, close)}  ({arrow} {pct:+.2f}%)   •   Updated {now_utc}"
+
+            # Put subtitle into title line for Telegram clarity (since mplfinance lacks true subtitle)
+            title_for_plot = f"{title}\n{subtitle}"
+
+            png = make_candlestick_png(
+                CandleSeries(symbol=sym, candles=series),
+                title=title_for_plot,
+                subtitle=subtitle,
+                show_volume=False,
+            )
+
             caption = (
-                f"📈 *{SYMBOL_LABELS.get(sym, sym)}*\n"
-                f"Interval: `{CANDLE_INTERVAL}`\n"
-                f"Close: `{_fmt_price(sym, close)}`  ({arrow} `{pct:+.2f}%` vs prev)\n"
-                f"As of: `{last['t']}`\n"
-                "_Source: TwelveData_"
+                f"🕯️ *{SYMBOL_LABELS.get(sym, sym)}*\n"
+                f"*Timeframe:* `{human_tf}`\n"
+                f"*Close:* `{_fmt_price(sym, close)}`  ({arrow} `{pct:+.2f}%`)\n"
+                f"*Updated:* `{now_utc}`\n"
+                "_Dark theme chart optimized for pattern recognition._"
             )
 
             try:
@@ -152,7 +177,7 @@ async def job_fetch_candles_and_post_charts() -> None:
             except Exception as e:
                 log.exception("Telegram send_photo failed for %s: %s", sym, e)
 
-    log.info("Cycle end: candles/charts")
+    log.info("Cycle end: charts")
 
 
 async def job_news_alerts() -> None:
@@ -168,10 +193,10 @@ async def job_news_alerts() -> None:
         return
 
     bot = await _bot()
-
     sent = 0
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
     for it in items:
-        # Dedupe by guid in DB
         if not insert_news_item(
             guid=it.guid,
             source=it.source,
@@ -185,18 +210,32 @@ async def job_news_alerts() -> None:
         ):
             continue
 
+        # Clean, fast-to-scan formatting
         msg = (
-            f"{_emoji(it.signal)} *Government / Macro Alert*\n"
+            f"{_emoji(it.signal)} *International Macro / Government Alert*\n"
             f"*Signal:* `{it.signal}`   *Score:* `{it.score:+.2f}`\n"
             f"*Tags:* `{it.tags}`   *Source:* `{it.source}`\n"
+            f"*Time:* `{now_utc}`\n\n"
             f"*Headline:* {it.title}\n"
         )
         if it.link:
             msg += f"{it.link}\n"
-        msg += "\n_Disclaimer: automated filtering/scoring; verify before trading._"
+
+        if it.summary:
+            summary = it.summary
+            if len(summary) > 350:
+                summary = summary[:350].rstrip() + "…"
+            msg += f"\n_{summary}_\n"
+
+        msg += "\n_Disclaimer: automated scoring. Verify impact before trading._"
 
         try:
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown", disable_web_page_preview=False)
+            await bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=msg,
+                parse_mode="Markdown",
+                disable_web_page_preview=False,
+            )
             sent += 1
         except Exception as e:
             log.exception("Telegram send_message failed: %s", e)
@@ -206,18 +245,13 @@ async def job_news_alerts() -> None:
 
 
 async def job_flow_alerts() -> None:
-    """
-    Optional “institutional interest” proxy: large aggTrades on Binance.
-    """
     if not (HAS_TELEGRAM and FLOW_ALERTS):
         return
-
-    import httpx
 
     url = "https://api.binance.com/api/v3/aggTrades"
     params = {"symbol": "XRPUSDT", "limit": 200}
 
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/2.0"}) as client:
         try:
             r = await client.get(url, params=params, timeout=20)
             r.raise_for_status()
@@ -236,7 +270,6 @@ async def job_flow_alerts() -> None:
         if notional < FLOW_NOTIONAL_THRESHOLD_USD:
             continue
 
-        # m=True => sell-initiated (buyer is maker)
         side = "SELL" if bool(row.get("m", False)) else "BUY"
         event_id = f"binance-{row['a']}"
         ts_utc = datetime.fromtimestamp(int(row["T"]) / 1000.0, tz=timezone.utc)
@@ -278,11 +311,11 @@ async def job_flow_alerts() -> None:
 async def startup():
     init_db()
 
-    # Run once at startup for immediate output
+    # immediate run
     try:
         await job_fetch_candles_and_post_charts()
     except Exception as e:
-        log.exception("Startup cycle failed: %s", e)
+        log.exception("Startup chart cycle failed: %s", e)
 
     scheduler.add_job(job_fetch_candles_and_post_charts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
     scheduler.add_job(job_news_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
@@ -300,8 +333,8 @@ async def index(request: Request):
             "request": request,
             "symbols": SYMBOLS,
             "interval": CANDLE_INTERVAL,
-            "db_path": os.getenv("DB_PATH", ""),
             "telegram": HAS_TELEGRAM,
+            "extra_feeds": bool((os.getenv("EXTRA_RSS_FEEDS", "") or "").strip()),
         },
     )
 
