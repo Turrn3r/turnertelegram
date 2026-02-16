@@ -15,20 +15,15 @@ from telegram import Bot
 import httpx
 import pandas as pd
 
-from .twelvedata import SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL, fetch_time_series
+from .twelvedata import SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL, fetch_time_series, resolve_instrument
 from .charting import CandleSeries, make_candlestick_png
-from .news import fetch_news
 from .orderbook import fetch_binance_depth, analyze_depth, OrderBookSignal
 from .analytics import structure_summary
 from .storage import (
     init_db,
     upsert_candle,
     get_last_candles,
-    insert_news_item,
     insert_orderbook_signal,
-    find_nearest_candle_close,
-    upsert_event_link,
-    get_recent_event_impacts,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -51,11 +46,6 @@ PLOT_WINDOW_MINUTES = int(os.getenv("PLOT_WINDOW_MINUTES", "15"))      # plot on
 ANALYSIS_LOOKBACK_1M = int(os.getenv("ANALYSIS_LOOKBACK_1M", "240"))   # use 4h 1m candles for pivots/structure
 CHART_DPI = int(os.getenv("CHART_DPI", "240"))
 
-NEWS_ALERTS = os.getenv("NEWS_ALERTS", "true").lower() in ("1", "true", "yes", "y")
-NEWS_THRESHOLD = float(os.getenv("NEWS_THRESHOLD", "2.5"))
-NEWS_SEND_NEUTRAL = os.getenv("NEWS_SEND_NEUTRAL", "false").lower() in ("1", "true", "yes", "y")
-NEWS_MAX_PER_CYCLE = int(os.getenv("NEWS_MAX_PER_CYCLE", "8"))
-
 ORDERBOOK_ALERTS = os.getenv("ORDERBOOK_ALERTS", "true").lower() in ("1", "true", "yes", "y")
 OB_IMBALANCE_THRESHOLD = float(os.getenv("OB_IMBALANCE_THRESHOLD", "0.22"))
 OB_SPREAD_BPS_THRESHOLD = float(os.getenv("OB_SPREAD_BPS_THRESHOLD", "8"))
@@ -69,7 +59,7 @@ LABELS = {
     SYMBOL_XRP: "XRP / USD",
     SYMBOL_GOLD: "Gold (XAU) / USD",
     SYMBOL_SILVER: "Silver (XAG) / USD",
-    SYMBOL_OIL: "Oil (USOIL)",
+    SYMBOL_OIL: "Crude Oil (WTI/Brent via TwelveData)",
 }
 
 _last_ob: OrderBookSignal | None = None  # in-memory previous snapshot for delta detection
@@ -117,7 +107,6 @@ def _df_from_candles(candles: list[dict]) -> pd.DataFrame:
 
 
 async def job_fetch_store_1m() -> None:
-    # Fetch 1m candles for each symbol and store (enough for analysis)
     async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1m"}) as client:
         for sym in SYMBOLS:
             try:
@@ -129,7 +118,7 @@ async def job_fetch_store_1m() -> None:
                         bot = await _bot()
                         await bot.send_message(
                             chat_id=TELEGRAM_CHAT_ID,
-                            text=f"⚠️ Data fetch failed for {LABELS.get(sym,sym)} (1m). Check TwelveData symbol mapping / limits.\nError: {e}",
+                            text=f"⚠️ Data fetch failed for {LABELS.get(sym,sym)} (requested 1m).\nError: {e}",
                         )
                     except Exception:
                         pass
@@ -152,7 +141,6 @@ async def job_post_1m_last15_charts() -> None:
             log.warning("Not enough 1m candles for %s", sym)
             continue
 
-        # analysis on full set, plot on last 15 mins
         df_all = _df_from_candles(series)
         if df_all.empty or len(df_all) < 60:
             continue
@@ -168,13 +156,16 @@ async def job_post_1m_last15_charts() -> None:
         prev = float(df_plot["Close"].iloc[-2]) if len(df_plot) >= 2 else close
         ret = (close - prev) / prev * 100.0 if prev else 0.0
 
-        # title explicitly states what you want
         title = f"{LABELS.get(sym, sym)} — 1m candles (last {PLOT_WINDOW_MINUTES} mins)"
         footer = f"Updated {now_utc} • Close {_fmt_price(sym, close)} ({_fmt_pct(ret)})"
 
-        png = make_candlestick_png(CandleSeries(sym, plot_candles), title=f"{title}\n{footer}", footer=footer, dpi=CHART_DPI)
+        png = make_candlestick_png(
+            CandleSeries(sym, plot_candles),
+            title=f"{title}\n{footer}",
+            footer=footer,
+            dpi=CHART_DPI
+        )
 
-        # simple bullet rundown
         bos = ss.bos or "-"
         choch = ss.choch or "-"
         ph = f"{ss.last_pivot_high:.4f}" if ss.last_pivot_high else "-"
@@ -213,7 +204,13 @@ async def job_orderbook_alerts() -> None:
     async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/ob"}) as client:
         try:
             depth = await fetch_binance_depth(client, symbol="XRPUSDT", limit=1000)
-            sig = analyze_depth(depth, symbol="XRPUSDT", depth_pct_band=0.0025, wall_usd_threshold=OB_WALL_USD_THRESHOLD, prev=_last_ob)
+            sig = analyze_depth(
+                depth,
+                symbol="XRPUSDT",
+                depth_pct_band=0.0025,
+                wall_usd_threshold=OB_WALL_USD_THRESHOLD,
+                prev=_last_ob
+            )
         except Exception as e:
             log.exception("Orderbook fetch/analyze failed: %s", e)
             return
@@ -221,12 +218,10 @@ async def job_orderbook_alerts() -> None:
     if not sig:
         return
 
-    # alert conditions
     stress = sig.spread_bps >= OB_SPREAD_BPS_THRESHOLD
     skew = abs(sig.imbalance) >= OB_IMBALANCE_THRESHOLD
     wall = sig.top_wall_side != "NONE"
 
-    # delta-based “institutional movement proxy”
     pull = (sig.delta_bid_depth_usd <= -OB_DEPTH_DELTA_USD) or (sig.delta_ask_depth_usd <= -OB_DEPTH_DELTA_USD)
     add = (sig.delta_bid_depth_usd >= OB_DEPTH_DELTA_USD) or (sig.delta_ask_depth_usd >= OB_DEPTH_DELTA_USD)
 
@@ -238,8 +233,18 @@ async def job_orderbook_alerts() -> None:
     signal_id = f"ob:{bucket}"
 
     if not insert_orderbook_signal(
-        signal_id, sig.symbol, sig.mid, sig.spread_bps, sig.bid_depth_usd, sig.ask_depth_usd, sig.imbalance,
-        sig.top_wall_side, sig.top_wall_usd, sig.top_wall_price, "binance_depth", now
+        signal_id,
+        sig.symbol,
+        sig.mid,
+        sig.spread_bps,
+        sig.bid_depth_usd,
+        sig.ask_depth_usd,
+        sig.imbalance,
+        sig.top_wall_side,
+        sig.top_wall_usd,
+        sig.top_wall_price,
+        "binance_depth",
+        now
     ):
         _last_ob = sig
         return
@@ -305,3 +310,14 @@ async def health():
         "plot_window_minutes": PLOT_WINDOW_MINUTES,
         "analysis_lookback_1m": ANALYSIS_LOOKBACK_1M,
     }
+
+
+@app.get("/debug/oil")
+async def debug_oil():
+    """
+    Shows what TwelveData instrument is currently resolved for oil,
+    and the resolved symbol/exchange (after probing).
+    """
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/debug"}) as client:
+        sym, exc = await resolve_instrument(client, SYMBOL_OIL)
+        return {"resolved_oil": {"symbol": sym, "exchange": exc}}
