@@ -3,15 +3,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 import httpx
-from datetime import datetime, timezone
 
+# Canonical symbols in your app
 SYMBOL_XRP = "XRPUSD"
-SYMBOL_GOLD = "XAUUSD"
-SYMBOL_SILVER = "XAGUSD"
-SYMBOL_OIL = "CL.F"
+SYMBOL_GOLD = "GC.F"     # Gold futures (COMEX) on Stooq :contentReference[oaicite:1]{index=1}
+SYMBOL_SILVER = "SI.F"   # Silver futures (COMEX) on Stooq :contentReference[oaicite:2]{index=2}
+SYMBOL_OIL = "CL.F"      # WTI crude futures on Stooq
 
-BINANCE_SYMBOL = "XRPUSDT"   # best liquidity
-BINANCE_INTERVAL = "15m"
+BINANCE_SYMBOL = "XRPUSDT"
 
 @dataclass
 class Quote:
@@ -19,58 +18,15 @@ class Quote:
     price: float
     source: str
 
-@dataclass
-class Candle:
-    symbol: str
-    interval: str
-    open_time_utc: str
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    source: str
-
-
-async def fetch_xrp_usd(client: httpx.AsyncClient) -> Quote:
-    # CoinGecko last price
-    url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {"ids": "ripple", "vs_currencies": "usd"}
+async def fetch_xrp_last(client: httpx.AsyncClient) -> Quote:
+    # Binance last price for XRPUSDT (close-to-live)
+    url = "https://api.binance.com/api/v3/ticker/price"
+    params = {"symbol": BINANCE_SYMBOL}
     r = await client.get(url, params=params, timeout=20)
     r.raise_for_status()
     data = r.json()
-    price = float(data["ripple"]["usd"])
-    return Quote(symbol=SYMBOL_XRP, price=price, source="coingecko")
-
-
-async def fetch_xrp_ohlc_15m(client: httpx.AsyncClient, limit: int = 200) -> list[Candle]:
-    # Binance klines for real candlesticks (public)
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": BINANCE_SYMBOL, "interval": BINANCE_INTERVAL, "limit": str(limit)}
-    r = await client.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-
-    candles: list[Candle] = []
-    for k in data:
-        # kline format: [openTime, open, high, low, close, volume, closeTime, ...]
-        open_ms = int(k[0])
-        open_time = datetime.fromtimestamp(open_ms / 1000.0, tz=timezone.utc).isoformat()
-        candles.append(
-            Candle(
-                symbol=SYMBOL_XRP,
-                interval=BINANCE_INTERVAL,
-                open_time_utc=open_time,
-                open=float(k[1]),
-                high=float(k[2]),
-                low=float(k[3]),
-                close=float(k[4]),
-                volume=float(k[5]),
-                source="binance",
-            )
-        )
-    return candles
-
+    price = float(data["price"])
+    return Quote(symbol=SYMBOL_XRP, price=price, source="binance")
 
 async def fetch_stooq_last(client: httpx.AsyncClient, stooq_symbol: str) -> Optional[Quote]:
     url = "https://stooq.com/q/l/"
@@ -90,22 +46,17 @@ async def fetch_stooq_last(client: httpx.AsyncClient, stooq_symbol: str) -> Opti
     if last in ("", "N/A"):
         return None
 
-    canonical = stooq_symbol.upper()
-    return Quote(symbol=canonical, price=float(last), source="stooq")
+    return Quote(symbol=stooq_symbol.upper(), price=float(last), source="stooq")
 
-
-async def fetch_all() -> tuple[list[Quote], list[Candle]]:
+async def fetch_all() -> list[Quote]:
     async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
         tasks = [
-            fetch_xrp_usd(client),
+            fetch_xrp_last(client),
             fetch_stooq_last(client, SYMBOL_GOLD),
             fetch_stooq_last(client, SYMBOL_SILVER),
             fetch_stooq_last(client, SYMBOL_OIL),
         ]
-        candles_task = fetch_xrp_ohlc_15m(client, limit=200)
-
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        candles_res = await asyncio.gather(candles_task, return_exceptions=True)
 
     quotes: list[Quote] = []
     for r in results:
@@ -113,8 +64,4 @@ async def fetch_all() -> tuple[list[Quote], list[Candle]]:
             continue
         quotes.append(r)
 
-    candles: list[Candle] = []
-    if candles_res and not isinstance(candles_res[0], Exception):
-        candles = candles_res[0]
-
-    return quotes, candles
+    return quotes
