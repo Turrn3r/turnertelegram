@@ -1,64 +1,97 @@
-import asyncio
+from __future__ import annotations
+
+# IMPORTANT: Force headless backend for Fly/Docker
+import matplotlib
+matplotlib.use("Agg")  # must be before importing pyplot
+
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime
+import io
 
-import httpx
+import pandas as pd
+import matplotlib.pyplot as plt
 
-SYMBOL_XRP = "XRPUSD"
-SYMBOL_GOLD = "GC.F"     # Gold futures
-SYMBOL_SILVER = "SI.F"   # Silver futures
-SYMBOL_OIL = "CL.F"      # WTI crude futures
-
-BINANCE_SYMBOL = "XRPUSDT"
 
 @dataclass
-class Quote:
+class SeriesData:
     symbol: str
-    price: float
-    source: str
+    points: list[dict]  # [{"ts": "...", "price": ...}, ...]
 
-async def fetch_xrp_last(client: httpx.AsyncClient) -> Quote:
-    url = "https://api.binance.com/api/v3/ticker/price"
-    params = {"symbol": BINANCE_SYMBOL}
-    r = await client.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    return Quote(symbol=SYMBOL_XRP, price=float(data["price"]), source="binance")
 
-async def fetch_stooq_last(client: httpx.AsyncClient, stooq_symbol: str) -> Optional[Quote]:
-    url = "https://stooq.com/q/l/"
-    params = {"s": stooq_symbol.lower(), "f": "sd2t2l", "h": "", "e": "csv"}
-    r = await client.get(url, params=params, timeout=20)
-    r.raise_for_status()
+def _to_df(points: list[dict]) -> pd.DataFrame:
+    if not points:
+        return pd.DataFrame(columns=["ts", "price"])
 
-    lines = r.text.strip().splitlines()
-    if len(lines) < 2:
-        return None
+    df = pd.DataFrame(points)
+    # Parse timestamps robustly
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    df = df.dropna(subset=["ts", "price"]).sort_values("ts")
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df = df.dropna(subset=["price"])
+    return df
 
-    row = lines[1].split(",")
-    if len(row) < 4:
-        return None
 
-    last = row[3].strip()
-    if last in ("", "N/A"):
-        return None
+def _fmt(sym: str, px: float) -> str:
+    return f"{px:,.4f}" if sym == "XRPUSD" else f"{px:,.2f}"
 
-    return Quote(symbol=stooq_symbol.upper(), price=float(last), source="stooq")
 
-async def fetch_all() -> list[Quote]:
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
-        tasks = [
-            fetch_xrp_last(client),
-            fetch_stooq_last(client, SYMBOL_GOLD),
-            fetch_stooq_last(client, SYMBOL_SILVER),
-            fetch_stooq_last(client, SYMBOL_OIL),
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+def make_telegram_chart_png(series_list: list[SeriesData]) -> bytes:
+    # Bright background so Telegram previews don’t look “blank”
+    fig, axes = plt.subplots(2, 2, figsize=(12, 7), dpi=180)
+    fig.patch.set_facecolor("white")
+    axes = axes.flatten()
 
-    quotes: list[Quote] = []
-    for r in results:
-        if isinstance(r, Exception) or r is None:
+    # Match the symbols you're storing
+    layout = ["XRPUSD", "GC.F", "SI.F", "CL.F"]
+    by_sym = {s.symbol: s for s in series_list}
+
+    for ax, sym in zip(axes, layout):
+        ax.set_facecolor("white")
+        ax.grid(True, alpha=0.25)
+        ax.set_title(sym)
+
+        df = _to_df(by_sym.get(sym, SeriesData(sym, [])).points)
+
+        if df.empty:
+            ax.text(0.5, 0.5, "NO DATA", ha="center", va="center", fontsize=18)
+            ax.set_xticks([])
+            ax.set_yticks([])
             continue
-        quotes.append(r)
 
-    return quotes
+        if len(df) == 1:
+            px = float(df["price"].iloc[0])
+            ax.scatter(df["ts"], df["price"], s=120)
+            ax.text(
+                0.5, 0.5, _fmt(sym, px),
+                transform=ax.transAxes,
+                ha="center", va="center",
+                fontsize=24, fontweight="bold",
+            )
+            ax.set_xticks([])
+            continue
+
+        # Always draw thick + markers so flat series still shows
+        ax.plot(df["ts"], df["price"], marker="o", markersize=5, linewidth=2.6)
+
+        ymin = float(df["price"].min())
+        ymax = float(df["price"].max())
+        if ymin == ymax:
+            pad = max(0.001 * ymin, 0.01)
+            ax.set_ylim(ymin - pad, ymax + pad)
+        else:
+            # small padding for visibility
+            pad = (ymax - ymin) * 0.08
+            ax.set_ylim(ymin - pad, ymax + pad)
+
+        for label in ax.get_xticklabels():
+            label.set_rotation(20)
+            label.set_horizontalalignment("right")
+
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    fig.suptitle(f"TurnerTrading — Charts — {now}", fontsize=14)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.35)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
