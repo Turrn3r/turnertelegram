@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import os
-from dataclasses import dataclass
 
 import matplotlib
 matplotlib.use("Agg")
@@ -10,13 +9,15 @@ matplotlib.use("Agg")
 import pandas as pd
 import mplfinance as mpf
 
+from dataclasses import dataclass
+
 from .analytics import rsi as calc_rsi, atr as calc_atr, pivots as calc_pivots
 
 
 @dataclass
 class CandleSeries:
     symbol: str
-    candles: list[dict]  # [{t,open,high,low,close,volume?}, ...]
+    candles: list[dict]
 
 
 def _to_df(candles: list[dict]) -> pd.DataFrame:
@@ -34,8 +35,7 @@ def _to_df(candles: list[dict]) -> pd.DataFrame:
     if "Volume" in df.columns:
         df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
 
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
-    return df
+    return df.dropna(subset=["Open", "High", "Low", "Close"])
 
 
 def _brand(key: str, default: str) -> str:
@@ -64,12 +64,12 @@ def _dark_style() -> mpf.MpfStyle:
             "axes.edgecolor": grid,
             "axes.grid": True,
             "grid.alpha": 0.22,
-            "font.size": 11,
+            "font.size": 10,
         },
     )
 
 
-def make_candlestick_png(series: CandleSeries, title: str, footer: str, dpi: int = 420) -> bytes:
+def make_candlestick_png(series: CandleSeries, title: str, footer: str, dpi: int = 240) -> bytes:
     df = _to_df(series.candles)
     style = _dark_style()
     accent = _brand("BRAND_ACCENT", "#8ea0ff")
@@ -77,19 +77,19 @@ def make_candlestick_png(series: CandleSeries, title: str, footer: str, dpi: int
     if df.empty or len(df) < 60:
         import matplotlib.pyplot as plt
 
-        fig = plt.figure(figsize=(13, 8), dpi=dpi)
+        fig = plt.figure(figsize=(10, 6), dpi=dpi)
         fig.patch.set_facecolor(_brand("BRAND_BG", "#0b0f14"))
         ax = fig.add_subplot(111)
-        ax.set_title(title, color=_brand("BRAND_TEXT", "#cfd6e6"), fontsize=16, fontweight="bold")
-        ax.text(0.5, 0.5, "NO DATA", ha="center", va="center", fontsize=28, color=_brand("BRAND_TEXT", "#cfd6e6"))
+        ax.set_title(title, color=_brand("BRAND_TEXT", "#cfd6e6"), fontsize=14, fontweight="bold")
+        ax.text(0.5, 0.5, "NO DATA", ha="center", va="center", fontsize=24, color=_brand("BRAND_TEXT", "#cfd6e6"))
         ax.axis("off")
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.35)
+        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.30)
         plt.close(fig)
         buf.seek(0)
         return buf.read()
 
-    # Indicators
+    # Indicators (lightweight)
     r = calc_rsi(df["Close"], 14)
     a = calc_atr(df, 14)
 
@@ -99,32 +99,33 @@ def make_candlestick_png(series: CandleSeries, title: str, footer: str, dpi: int
     pl_y = df["Low"].where(pl, other=float("nan"))
 
     apds = [
-        mpf.make_addplot(r, panel=1, color=accent, width=1.2, ylabel="RSI"),
-        mpf.make_addplot(a, panel=2, color=accent, width=1.2, ylabel="ATR"),
-        mpf.make_addplot(ph_y, type="scatter", markersize=35, marker="^", color=accent),
-        mpf.make_addplot(pl_y, type="scatter", markersize=35, marker="v", color=accent),
+        mpf.make_addplot(r, panel=1, color=accent, width=1.0, ylabel="RSI"),
+        mpf.make_addplot(a, panel=2, color=accent, width=1.0, ylabel="ATR"),
+        mpf.make_addplot(ph_y, type="scatter", markersize=25, marker="^", color=accent),
+        mpf.make_addplot(pl_y, type="scatter", markersize=25, marker="v", color=accent),
     ]
 
+    # IMPORTANT: keep figsize moderate to avoid RAM spikes
     fig, _axes = mpf.plot(
         df,
         type="candle",
         style=style,
-        figsize=(13.8, 8.6),
+        figsize=(11.0, 7.0),
         returnfig=True,
         mav=(9, 21),
         panel_ratios=(3, 1, 1),
         addplot=apds,
-        datetime_format="%H:%M",  # minute time axis
+        datetime_format="%H:%M",
         xrotation=0,
         tight_layout=True,
-        update_width_config=dict(candle_linewidth=1.1, candle_width=0.70),
+        update_width_config=dict(candle_linewidth=1.0, candle_width=0.65),
     )
 
-    fig.suptitle(title, fontsize=16, fontweight="bold", y=0.985, color=_brand("BRAND_TEXT", "#cfd6e6"))
-    fig.text(0.01, 0.01, footer, color=accent, fontsize=11)
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.985, color=_brand("BRAND_TEXT", "#cfd6e6"))
+    fig.text(0.01, 0.01, footer, color=accent, fontsize=10)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0.30)
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0.25)
     matplotlib.pyplot.close(fig)
     buf.seek(0)
     return buf.read()
