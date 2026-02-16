@@ -1,7 +1,7 @@
-diff --git a/app/fly.toml b/app/fly.toml
+diff --git a/fly.toml b/fly.toml
 index 1b4b6baa95d8f54a871ebe740f805fafd69f8767..45e8c90c34034f6127bafb342800a15cd47c5d2b 100644
---- a/app/fly.toml
-+++ b/app/fly.toml
+--- a/fly.toml
++++ b/fly.toml
 @@ -1,20 +1,23 @@
  app = "turnertelegram"
  primary_region = "ams"
