@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from typing import Optional
 
 import matplotlib
 matplotlib.use("Agg")
 
 import pandas as pd
+import numpy as np
 import mplfinance as mpf
 
 
@@ -18,7 +20,7 @@ class CandleSeries:
 
 def _to_df(candles: list[dict]) -> pd.DataFrame:
     if not candles:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+        return pd.DataFrame()
 
     df = pd.DataFrame(candles)
     df["t"] = pd.to_datetime(df["t"], utc=True, errors="coerce")
@@ -44,32 +46,62 @@ def _to_df(candles: list[dict]) -> pd.DataFrame:
     return df
 
 
-def _dark_style() -> mpf.MpfStyle:
-    # A crisp dark theme that stays legible in Telegram compression.
+def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50.0)
+
+
+def _theme_from_env():
+    # Defaults are a “Turrner-like” dark fintech palette.
+    bg = (matplotlib.rcParams.get("figure.facecolor") or "#0b0f14")
+    face = "#0b0f14"
+    grid = "#243042"
+    text = "#cfd6e6"
+
+    up = "#2de37a"
+    down = "#ff4d4d"
+    accent = "#8ea0ff"
+
+    # Optional overrides to match turrner.com exactly
+    face = os.getenv("BRAND_BG", face)
+    grid = os.getenv("BRAND_GRID", grid)
+    text = os.getenv("BRAND_TEXT", text)
+    up = os.getenv("BRAND_UP", up)
+    down = os.getenv("BRAND_DOWN", down)
+    accent = os.getenv("BRAND_ACCENT", accent)
+
     marketcolors = mpf.make_marketcolors(
-        up="#2de37a",
-        down="#ff4d4d",
+        up=up,
+        down=down,
         edge="inherit",
         wick="inherit",
         volume="inherit",
     )
-    return mpf.make_mpf_style(
+
+    style = mpf.make_mpf_style(
         base_mpf_style="nightclouds",
         marketcolors=marketcolors,
-        facecolor="#0b0f14",
-        figcolor="#0b0f14",
-        gridcolor="#2a2f3a",
+        facecolor=face,
+        figcolor=face,
+        gridcolor=grid,
         rc={
-            "axes.labelcolor": "#cfd6e6",
-            "xtick.color": "#cfd6e6",
-            "ytick.color": "#cfd6e6",
-            "text.color": "#cfd6e6",
-            "axes.edgecolor": "#2a2f3a",
+            "axes.labelcolor": text,
+            "xtick.color": text,
+            "ytick.color": text,
+            "text.color": text,
+            "axes.edgecolor": grid,
             "axes.grid": True,
-            "grid.alpha": 0.20,
-            "font.size": 10,
+            "grid.alpha": 0.22,
+            "font.size": 11,
         },
     )
+    return style, face, grid, text, accent
 
 
 def make_candlestick_png(
@@ -77,61 +109,65 @@ def make_candlestick_png(
     title: str,
     subtitle: str,
     show_volume: bool = False,
+    dpi: int = 360,
 ) -> bytes:
     df = _to_df(series.candles)
+    style, face, grid, text, accent = _theme_from_env()
 
-    # If no data, still create a usable PNG
-    if df.empty:
+    if df.empty or len(df) < 5:
         import matplotlib.pyplot as plt
 
-        fig = plt.figure(figsize=(10, 6), dpi=180)
-        fig.patch.set_facecolor("#0b0f14")
+        fig = plt.figure(figsize=(12, 7), dpi=dpi)
+        fig.patch.set_facecolor(face)
         ax = fig.add_subplot(111)
-        ax.set_facecolor("#0b0f14")
-        ax.set_title(title, color="#cfd6e6")
-        ax.text(0.5, 0.52, "NO DATA", ha="center", va="center", fontsize=24, color="#cfd6e6")
-        ax.text(0.5, 0.44, subtitle, ha="center", va="center", fontsize=11, color="#8ea0bf")
+        ax.set_facecolor(face)
+        ax.set_title(title, color=text, fontsize=16, fontweight="bold")
+        ax.text(0.5, 0.52, "NO DATA", ha="center", va="center", fontsize=28, color=text)
+        ax.text(0.5, 0.44, subtitle, ha="center", va="center", fontsize=12, color=accent)
         ax.axis("off")
-
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.35)
         plt.close(fig)
         buf.seek(0)
         return buf.read()
 
-    style = _dark_style()
+    # Indicators: EMA + RSI for pattern recognition
+    close = df["Close"]
+    rsi = _rsi(close, 14)
+    apds = [
+        mpf.make_addplot(rsi, panel=1, color=accent, width=1.2, ylabel="RSI"),
+    ]
 
-    # Perception upgrades:
-    # - EMA(9,21) for trend + pullback structure
-    # - Tight layout + legible time axis formatting
-    # - High DPI so candles remain sharp in Telegram
-    buf = io.BytesIO()
-    mpf.plot(
+    # RSI guide lines
+    # mplfinance doesn’t do horizontal lines in addplot cleanly; we’ll keep it minimal.
+
+    fig, axes = mpf.plot(
         df,
         type="candle",
         style=style,
-        figsize=(11.5, 7.0),
-        title=title,
-        ylabel="",
+        figsize=(13.5, 8.0),
+        returnfig=True,
         volume=show_volume and ("Volume" in df.columns),
         mav=(9, 21),
-        datetime_format="%H:%M",   # SHOW MINUTES (key change)
+        panel_ratios=(3, 1),
+        addplot=apds,
+        datetime_format="%H:%M",  # actual minute stamps
         xrotation=0,
         tight_layout=True,
-        scale_width_adjustment=dict(candle=1.10, volume=0.90),
+        scale_padding={"left": 0.6, "right": 0.8, "top": 0.8, "bottom": 0.8},
         update_width_config=dict(
-            candle_linewidth=1.0,
+            candle_linewidth=1.1,
             candle_width=0.70,
             volume_linewidth=0.6,
             volume_width=0.70,
         ),
-        addplot=[],
-        savefig=dict(fname=buf, dpi=220, bbox_inches="tight", pad_inches=0.35),
     )
 
-    # Add subtitle (timeframe + last update) via figure text overlay
-    # mplfinance does not expose a direct subtitle; we re-open with matplotlib and add text is costly.
-    # Instead: encode subtitle into title line for Telegram clarity.
-    # (So main.py should pass title already containing timeframe and subtitle.)
+    fig.suptitle(title, fontsize=16, fontweight="bold", y=0.98, color=text)
+    fig.text(0.01, 0.01, subtitle, color=accent, fontsize=11)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0.30)
+    matplotlib.pyplot.close(fig)
     buf.seek(0)
     return buf.read()
