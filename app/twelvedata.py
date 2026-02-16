@@ -2,25 +2,23 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 
-# App symbols
 SYMBOL_XRP = "XRPUSD"
 SYMBOL_GOLD = "XAUUSD"
 SYMBOL_SILVER = "XAGUSD"
 SYMBOL_OIL = "USOIL"
 
-# TwelveData symbols
+# Allow overrides from env (so you can fix symbol mapping without redeploying code changes)
 TD_SYMBOLS = {
-    SYMBOL_XRP: "XRP/USD",
-    SYMBOL_GOLD: "XAU/USD",
-    SYMBOL_SILVER: "XAG/USD",
-    SYMBOL_OIL: "USOIL",
+    SYMBOL_XRP: os.getenv("TD_XRP", "XRP/USD").strip(),
+    SYMBOL_GOLD: os.getenv("TD_XAU", "XAU/USD").strip(),
+    SYMBOL_SILVER: os.getenv("TD_XAG", "XAG/USD").strip(),
+    SYMBOL_OIL: os.getenv("TD_OIL", "USOIL").strip(),
 }
 
 SUPPORTED_INTERVALS = {"1min", "5min", "15min", "30min", "45min", "1h", "2h", "4h", "1day"}
@@ -28,7 +26,7 @@ SUPPORTED_INTERVALS = {"1min", "5min", "15min", "30min", "45min", "1h", "2h", "4
 
 @dataclass
 class Candle:
-    t: str  # ISO-like timestamp
+    t: str
     open: float
     high: float
     low: float
@@ -44,12 +42,13 @@ def assert_configured() -> None:
 async def fetch_time_series(
     client: httpx.AsyncClient,
     app_symbol: str,
-    interval: str = "15min",
+    interval: str = "1min",
     outputsize: int = 300,
 ) -> list[Candle]:
     assert_configured()
     if interval not in SUPPORTED_INTERVALS:
         raise ValueError(f"Unsupported interval '{interval}'")
+
     td_symbol = TD_SYMBOLS.get(app_symbol)
     if not td_symbol:
         raise ValueError(f"Unknown symbol '{app_symbol}'")
@@ -69,18 +68,17 @@ async def fetch_time_series(
     data = r.json()
 
     if data.get("status") == "error":
-        raise RuntimeError(f"TwelveData error: {data.get('message', 'unknown')}")
+        raise RuntimeError(f"TwelveData error for {td_symbol}: {data.get('message', 'unknown')}")
 
     values = data.get("values") or []
     candles: list[Candle] = []
-    for row in reversed(values):  # oldest->newest
+    for row in reversed(values):  # oldest -> newest
         dt_str = row.get("datetime")
         if not dt_str:
             continue
         t = dt_str.replace(" ", "T")
         if "Z" not in t and "+" not in t:
             t = t + "Z"
-
         candles.append(
             Candle(
                 t=t,
