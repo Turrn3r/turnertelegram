@@ -9,7 +9,7 @@
    DB_PATH = "/tmp/prices.db"
    POST_TO_TELEGRAM = "true"
    FETCH_EVERY_MINUTES = "15"
-+  TWELVEDATA_API_KEY = ""
++  TWELVEDATA_API_KEY = "9a22a4eeebfc4d28bb7e09a841cc20d3"
    NEWS_ALERTS = "true"
    NEWS_THRESHOLD = "2.5"
    NEWS_SEND_NEUTRAL = "false"
