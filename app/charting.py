@@ -1,66 +1,64 @@
-from __future__ import annotations
+import asyncio
 from dataclasses import dataclass
-from datetime import datetime
-import pandas as pd
-import matplotlib.pyplot as plt
+from typing import Optional
+
+import httpx
+
+SYMBOL_XRP = "XRPUSD"
+SYMBOL_GOLD = "GC.F"     # Gold futures
+SYMBOL_SILVER = "SI.F"   # Silver futures
+SYMBOL_OIL = "CL.F"      # WTI crude futures
+
+BINANCE_SYMBOL = "XRPUSDT"
 
 @dataclass
-class SeriesData:
+class Quote:
     symbol: str
-    points: list[dict]  # [{"ts": "...", "price": ...}, ...]
+    price: float
+    source: str
 
-def _to_df(points: list[dict]) -> pd.DataFrame:
-    if not points:
-        return pd.DataFrame(columns=["ts", "price"])
-    df = pd.DataFrame(points)
-    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
-    df = df.dropna(subset=["ts", "price"]).sort_values("ts")
-    df["price"] = df["price"].astype(float)
-    return df
+async def fetch_xrp_last(client: httpx.AsyncClient) -> Quote:
+    url = "https://api.binance.com/api/v3/ticker/price"
+    params = {"symbol": BINANCE_SYMBOL}
+    r = await client.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    return Quote(symbol=SYMBOL_XRP, price=float(data["price"]), source="binance")
 
-def make_telegram_chart_png(series_list: list[SeriesData]) -> bytes:
-    # Bright background to avoid “blank” looking images in Telegram
-    fig, axes = plt.subplots(2, 2, figsize=(12, 7), dpi=180)
-    fig.patch.set_facecolor("white")
+async def fetch_stooq_last(client: httpx.AsyncClient, stooq_symbol: str) -> Optional[Quote]:
+    url = "https://stooq.com/q/l/"
+    params = {"s": stooq_symbol.lower(), "f": "sd2t2l", "h": "", "e": "csv"}
+    r = await client.get(url, params=params, timeout=20)
+    r.raise_for_status()
 
-    axes = axes.flatten()
+    lines = r.text.strip().splitlines()
+    if len(lines) < 2:
+        return None
 
-    # Order matches your instruments
-    layout = ["XRPUSD", "GC.F", "SI.F", "CL.F"]
-    by_sym = {s.symbol: s for s in series_list}
+    row = lines[1].split(",")
+    if len(row) < 4:
+        return None
 
-    for ax, sym in zip(axes, layout):
-        ax.set_facecolor("white")
+    last = row[3].strip()
+    if last in ("", "N/A"):
+        return None
 
-        df = _to_df(by_sym.get(sym, SeriesData(sym, [])).points)
-        if df.empty:
-            ax.set_title(f"{sym} (no data yet)")
-            ax.grid(True, alpha=0.25)
+    return Quote(symbol=stooq_symbol.upper(), price=float(last), source="stooq")
+
+async def fetch_all() -> list[Quote]:
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
+        tasks = [
+            fetch_xrp_last(client),
+            fetch_stooq_last(client, SYMBOL_GOLD),
+            fetch_stooq_last(client, SYMBOL_SILVER),
+            fetch_stooq_last(client, SYMBOL_OIL),
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    quotes: list[Quote] = []
+    for r in results:
+        if isinstance(r, Exception) or r is None:
             continue
+        quotes.append(r)
 
-        # Thick line + large markers so even flat lines show clearly
-        ax.plot(df["ts"], df["price"], marker="o", markersize=5, linewidth=2.5)
-        ax.set_title(sym)
-        ax.grid(True, alpha=0.25)
-
-        # Make x labels readable
-        for label in ax.get_xticklabels():
-            label.set_rotation(20)
-            label.set_horizontalalignment("right")
-
-        # Add small y padding so flat series isn't visually “invisible”
-        ymin = df["price"].min()
-        ymax = df["price"].max()
-        if ymin == ymax:
-            pad = max(0.001 * ymin, 0.01)
-            ax.set_ylim(ymin - pad, ymax + pad)
-
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    fig.suptitle(f"TurnerTrading — Charts — {now}", fontsize=14)
-
-    import io
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.35)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
+    return quotes
