@@ -3,78 +3,71 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from .storage import (
-    init_db,
-    insert_point,
-    last_n_points,
-    last_point,
-    previous_point,
-    insert_news_item,
-    insert_flow_event,
-)
-from .pricing import (
-    SYMBOL_GOLD,
-    SYMBOL_OIL,
-    SYMBOL_SILVER,
+from telegram import Bot
+
+import httpx
+
+from .storage import init_db, upsert_candle, get_last_candles, insert_news_item, insert_flow_event
+from .twelvedata import (
     SYMBOL_XRP,
-    fetch_all,
-    fetch_large_xrp_trades,
+    SYMBOL_GOLD,
+    SYMBOL_SILVER,
+    SYMBOL_OIL,
+    fetch_time_series,
 )
-from .charting import SeriesData, make_telegram_chart_png
+from .charting import CandleSeries, make_candlestick_png
 from .news import fetch_news
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("turnertelegram")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID_RAW = os.getenv("TELEGRAM_CHAT_ID", "")
+app = FastAPI()
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+scheduler = AsyncIOScheduler()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID", "") or "").strip()
 POST_TO_TELEGRAM = os.getenv("POST_TO_TELEGRAM", "true").lower() in ("1", "true", "yes", "y")
 
 FETCH_EVERY_MINUTES = int(os.getenv("FETCH_EVERY_MINUTES", "15"))
-HISTORY_POINTS = int(os.getenv("HISTORY_POINTS", "288"))
+CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "15min")
+HISTORY_CANDLES = int(os.getenv("HISTORY_CANDLES", "300"))
 
 NEWS_ALERTS = os.getenv("NEWS_ALERTS", "true").lower() in ("1", "true", "yes", "y")
 NEWS_THRESHOLD = float(os.getenv("NEWS_THRESHOLD", "2.5"))
 NEWS_SEND_NEUTRAL = os.getenv("NEWS_SEND_NEUTRAL", "false").lower() in ("1", "true", "yes", "y")
+NEWS_MAX_PER_CYCLE = int(os.getenv("NEWS_MAX_PER_CYCLE", "8"))
 
 FLOW_ALERTS = os.getenv("FLOW_ALERTS", "true").lower() in ("1", "true", "yes", "y")
 FLOW_NOTIONAL_THRESHOLD_USD = float(os.getenv("FLOW_NOTIONAL_THRESHOLD_USD", "250000"))
 
 SYMBOLS = [SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL]
 
-app = FastAPI()
-templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
-scheduler = AsyncIOScheduler()
+SYMBOL_LABELS = {
+    SYMBOL_XRP: "XRP / USD",
+    SYMBOL_GOLD: "Gold (XAU) / USD",
+    SYMBOL_SILVER: "Silver (XAG) / USD",
+    SYMBOL_OIL: "Oil (USOIL)",
+}
+
+HAS_TELEGRAM = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and POST_TO_TELEGRAM)
 
 
-def normalize_chat_id(chat_id: str) -> str:
-    chat_id = (chat_id or "").strip()
-    if chat_id.startswith("https://t.me/") or chat_id.startswith("http://t.me/"):
-        chat_id = chat_id.split("t.me/")[-1].strip("/")
-    if chat_id.startswith("t.me/"):
-        chat_id = chat_id.split("t.me/")[-1].strip("/")
-    if chat_id and not chat_id.startswith("@") and not chat_id.lstrip("-").isdigit():
-        chat_id = "@" + chat_id
-    return chat_id
-
-
-TELEGRAM_CHAT_ID = normalize_chat_id(TELEGRAM_CHAT_ID_RAW)
+def _pct(a: float, b: float) -> float:
+    if b == 0:
+        return 0.0
+    return (a - b) / b * 100.0
 
 
 def _fmt_price(sym: str, px: float) -> str:
+    # XRP often wants more decimals
     return f"{px:,.4f}" if sym == SYMBOL_XRP else f"{px:,.2f}"
-
-
-def _pct_change(curr: float, prev: float) -> float:
-    if prev == 0:
-        return 0.0
-    return (curr - prev) / prev * 100.0
 
 
 def _emoji(sig: str) -> str:
@@ -83,140 +76,103 @@ def _emoji(sig: str) -> str:
 
 def _fmt_notional(value: float) -> str:
     if value >= 1_000_000_000:
-        return f"${value / 1_000_000_000:.2f}B"
+        return f"${value/1_000_000_000:.2f}B"
     if value >= 1_000_000:
-        return f"${value / 1_000_000:.2f}M"
+        return f"${value/1_000_000:.2f}M"
     if value >= 1_000:
-        return f"${value / 1_000:.1f}K"
+        return f"${value/1_000:.1f}K"
     return f"${value:,.0f}"
 
 
-async def job_fetch_and_store() -> None:
-    quotes = await fetch_all()
-    now = datetime.now(timezone.utc)
-
-    if not quotes:
-        log.warning("Price fetch returned 0 quotes")
-        return
-
-    for q in quotes:
-        insert_point(q.symbol, q.price, q.source, ts=now)
-
-    log.info("Stored quotes: %s", ", ".join([f"{q.symbol}={q.price}" for q in quotes]))
+async def _bot() -> Bot:
+    return Bot(token=TELEGRAM_BOT_TOKEN)
 
 
-async def job_post_channel_update() -> None:
-    if not POST_TO_TELEGRAM:
-        return
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("Telegram not configured (missing token or chat id)")
-        return
-
-    series = [SeriesData(symbol=sym, points=last_n_points(sym, limit=HISTORY_POINTS)) for sym in SYMBOLS]
-
-    try:
-        png = make_telegram_chart_png(series)
-        log.info("Chart PNG bytes=%d", len(png))
-    except Exception as e:
-        log.exception("Chart render failed: %s", e)
-        return
-
-    lines: list[str] = []
-    for sym in SYMBOLS:
-        lp = last_point(sym)
-        pp = previous_point(sym)
-        if not lp:
-            lines.append(f"{sym}: n/a")
-            continue
-        curr = float(lp["price"])
-        if pp:
-            prev = float(pp["price"])
-            pct = _pct_change(curr, prev)
-            arrow = "🟢" if pct >= 0 else "🔴"
-            lines.append(f"{sym}: {_fmt_price(sym, curr)} ({arrow} {pct:+.2f}%)")
-        else:
-            lines.append(f"{sym}: {_fmt_price(sym, curr)} (collecting…)")
-
-    caption = "📊 TurnerTrading — Update\n" + "\n".join(lines) + "\n#XRP #GOLD #SILVER #OIL"
-
-    from telegram import Bot
-
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-    try:
-        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=png, caption=caption)
-        log.info("Posted chart update to Telegram: %s", TELEGRAM_CHAT_ID)
-    except Exception as e:
-        log.exception("Telegram chart post failed: %s", e)
-
-
-async def job_flow_alerts() -> None:
-    if not (POST_TO_TELEGRAM and FLOW_ALERTS):
-        return
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-
-    from telegram import Bot
-    import httpx
-
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+async def job_fetch_candles_and_post_charts() -> None:
+    """
+    Main cycle:
+      1) Pull latest 15min candles for each symbol from TwelveData
+      2) Upsert candles into SQLite
+      3) Render & post 1 chart per symbol (4 messages)
+    """
+    log.info("Cycle start: candles interval=%s history=%d", CANDLE_INTERVAL, HISTORY_CANDLES)
 
     async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
-        events = await fetch_large_xrp_trades(client, min_notional_usd=FLOW_NOTIONAL_THRESHOLD_USD)
+        for sym in SYMBOLS:
+            try:
+                candles = await fetch_time_series(client, sym, interval=CANDLE_INTERVAL, outputsize=HISTORY_CANDLES)
+            except Exception as e:
+                log.exception("TwelveData fetch failed for %s: %s", sym, e)
+                continue
 
-    sent = 0
-    for ev in events:
-        inserted = insert_flow_event(
-            event_id=ev.event_id,
-            symbol=ev.symbol,
-            side=ev.side,
-            price=ev.price,
-            quantity=ev.quantity,
-            notional_usd=ev.notional_usd,
-            source=ev.source,
-            ts=ev.ts_utc,
-        )
-        if not inserted:
-            continue
+            for c in candles:
+                upsert_candle(
+                    symbol=sym,
+                    interval=CANDLE_INTERVAL,
+                    open_time_utc=c.t,
+                    o=c.open,
+                    h=c.high,
+                    l=c.low,
+                    c=c.close,
+                    v=c.volume,
+                    source="twelvedata",
+                )
 
-        direction = "🟢 BUY pressure" if ev.side == "BUY" else "🔴 SELL pressure"
-        msg = (
-            "🐋 *High-Interest XRP Flow Alert*\n"
-            f"*Signal:* {direction}\n"
-            f"*Notional:* `{_fmt_notional(ev.notional_usd)}`\n"
-            f"*Price:* `{_fmt_price(ev.symbol, ev.price)}`\n"
-            f"*Size:* `{ev.quantity:,.0f} XRP`\n"
-            "*Source:* `Binance aggregated tape`\n\n"
-            "_Large-flow proxy only; not identified account-level data. Not financial advice._"
-        )
+            if not HAS_TELEGRAM:
+                continue
 
-        try:
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
-            sent += 1
-        except Exception as e:
-            log.exception("Telegram flow post failed: %s", e)
+            # Pull back from DB to ensure plot is from the stored dataset
+            series = get_last_candles(sym, CANDLE_INTERVAL, limit=HISTORY_CANDLES)
+            if len(series) < 2:
+                log.warning("Not enough candles for %s yet", sym)
+                continue
 
-    if events:
-        log.info("Flow job complete. scanned=%d sent=%d threshold=%s", len(events), sent, FLOW_NOTIONAL_THRESHOLD_USD)
+            last = series[-1]
+            prev = series[-2]
+            close = float(last["close"])
+            prev_close = float(prev["close"])
+            pct = _pct(close, prev_close)
+
+            title = f"{SYMBOL_LABELS.get(sym, sym)} — {CANDLE_INTERVAL} Candles"
+            png = make_candlestick_png(CandleSeries(symbol=sym, candles=series), title=title, show_volume=False)
+
+            arrow = "🟢" if pct >= 0 else "🔴"
+            caption = (
+                f"📈 *{SYMBOL_LABELS.get(sym, sym)}*\n"
+                f"Interval: `{CANDLE_INTERVAL}`\n"
+                f"Close: `{_fmt_price(sym, close)}`  ({arrow} `{pct:+.2f}%` vs prev)\n"
+                f"As of: `{last['t']}`\n"
+                "_Source: TwelveData_"
+            )
+
+            try:
+                bot = await _bot()
+                await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=png, caption=caption, parse_mode="Markdown")
+                log.info("Posted chart for %s", sym)
+            except Exception as e:
+                log.exception("Telegram send_photo failed for %s: %s", sym, e)
+
+    log.info("Cycle end: candles/charts")
 
 
 async def job_news_alerts() -> None:
-    if not (POST_TO_TELEGRAM and NEWS_ALERTS):
-        return
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not (HAS_TELEGRAM and NEWS_ALERTS):
         return
 
-    items = fetch_news(threshold=NEWS_THRESHOLD, include_neutral=NEWS_SEND_NEUTRAL)
+    items = fetch_news(
+        threshold=NEWS_THRESHOLD,
+        include_neutral=NEWS_SEND_NEUTRAL,
+        max_items=NEWS_MAX_PER_CYCLE,
+    )
     if not items:
         return
 
-    from telegram import Bot
-
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    bot = await _bot()
 
     sent = 0
     for it in items:
-        inserted = insert_news_item(
+        # Dedupe by guid in DB
+        if not insert_news_item(
             guid=it.guid,
             source=it.source,
             title=it.title,
@@ -226,62 +182,130 @@ async def job_news_alerts() -> None:
             tags=it.tags,
             score=it.score,
             signal=it.signal,
-        )
-        if not inserted:
+        ):
             continue
 
         msg = (
-            f"{_emoji(it.signal)} *NEWS ALERT* ({it.signal} bias)\n"
-            f"*Score:* `{it.score:+.2f}`\n"
-            f"*Tags:* `{it.tags}`\n"
-            f"*Source:* `{it.source}`\n"
+            f"{_emoji(it.signal)} *Government / Macro Alert*\n"
+            f"*Signal:* `{it.signal}`   *Score:* `{it.score:+.2f}`\n"
+            f"*Tags:* `{it.tags}`   *Source:* `{it.source}`\n"
             f"*Headline:* {it.title}\n"
         )
         if it.link:
             msg += f"{it.link}\n"
-        msg += "\n_Disclaimer: automated headline scoring; not financial advice._"
+        msg += "\n_Disclaimer: automated filtering/scoring; verify before trading._"
+
+        try:
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown", disable_web_page_preview=False)
+            sent += 1
+        except Exception as e:
+            log.exception("Telegram send_message failed: %s", e)
+
+    if sent:
+        log.info("News alerts sent=%d", sent)
+
+
+async def job_flow_alerts() -> None:
+    """
+    Optional “institutional interest” proxy: large aggTrades on Binance.
+    """
+    if not (HAS_TELEGRAM and FLOW_ALERTS):
+        return
+
+    import httpx
+
+    url = "https://api.binance.com/api/v3/aggTrades"
+    params = {"symbol": "XRPUSDT", "limit": 200}
+
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/1.0"}) as client:
+        try:
+            r = await client.get(url, params=params, timeout=20)
+            r.raise_for_status()
+            rows = r.json()
+        except Exception as e:
+            log.exception("Flow fetch failed: %s", e)
+            return
+
+    bot = await _bot()
+    sent = 0
+
+    for row in rows:
+        px = float(row["p"])
+        qty = float(row["q"])
+        notional = px * qty
+        if notional < FLOW_NOTIONAL_THRESHOLD_USD:
+            continue
+
+        # m=True => sell-initiated (buyer is maker)
+        side = "SELL" if bool(row.get("m", False)) else "BUY"
+        event_id = f"binance-{row['a']}"
+        ts_utc = datetime.fromtimestamp(int(row["T"]) / 1000.0, tz=timezone.utc)
+
+        if not insert_flow_event(
+            event_id=event_id,
+            symbol=SYMBOL_XRP,
+            side=side,
+            price=px,
+            quantity=qty,
+            notional_usd=notional,
+            source="binance_agg_trade",
+            ts=ts_utc,
+        ):
+            continue
+
+        direction = "🟢 BUY pressure" if side == "BUY" else "🔴 SELL pressure"
+        msg = (
+            "🐋 *XRP Large-Flow Alert*\n"
+            f"*Signal:* {direction}\n"
+            f"*Notional:* `{_fmt_notional(notional)}`\n"
+            f"*Price:* `{_fmt_price(SYMBOL_XRP, px)}`\n"
+            f"*Size:* `{qty:,.0f} XRP`\n"
+            f"*Time:* `{ts_utc.isoformat()}`\n"
+            "_Source: Binance aggTrades (proxy)_"
+        )
 
         try:
             await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
             sent += 1
         except Exception as e:
-            log.exception("Telegram news post failed: %s", e)
+            log.exception("Flow telegram failed: %s", e)
 
-    log.info("News job complete. Items=%d Sent=%d", len(items), sent)
+    if sent:
+        log.info("Flow alerts sent=%d", sent)
 
 
 @app.on_event("startup")
 async def startup():
     init_db()
-    await job_fetch_and_store()
 
-    scheduler.add_job(job_fetch_and_store, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
-    scheduler.add_job(job_post_channel_update, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
+    # Run once at startup for immediate output
+    try:
+        await job_fetch_candles_and_post_charts()
+    except Exception as e:
+        log.exception("Startup cycle failed: %s", e)
+
+    scheduler.add_job(job_fetch_candles_and_post_charts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
     scheduler.add_job(job_news_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
     scheduler.add_job(job_flow_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
 
     scheduler.start()
-    log.info("Scheduler started interval=%d chat_id=%s", FETCH_EVERY_MINUTES, TELEGRAM_CHAT_ID)
+    log.info("Scheduler started. interval=%d HAS_TELEGRAM=%s", FETCH_EVERY_MINUTES, HAS_TELEGRAM)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS})
-
-
-@app.get("/api/series")
-async def api_series(limit: int = 500):
-    limit = max(10, min(limit, 2000))
-    return {sym: last_n_points(sym, limit=limit) for sym in SYMBOLS}
-
-
-@app.get("/debug/chart.png")
-async def debug_chart_png():
-    series = [SeriesData(symbol=sym, points=last_n_points(sym, limit=HISTORY_POINTS)) for sym in SYMBOLS]
-    png = make_telegram_chart_png(series)
-    return Response(content=png, media_type="image/png")
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "symbols": SYMBOLS,
+            "interval": CANDLE_INTERVAL,
+            "db_path": os.getenv("DB_PATH", ""),
+            "telegram": HAS_TELEGRAM,
+        },
+    )
 
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {"ok": True, "telegram": HAS_TELEGRAM, "interval": CANDLE_INTERVAL}
