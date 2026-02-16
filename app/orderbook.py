@@ -13,7 +13,7 @@ class OrderBookSignal:
     spread_bps: float
     bid_depth_usd: float
     ask_depth_usd: float
-    imbalance: float  # (bid-ask)/(bid+ask) in [-1,1]
+    imbalance: float  # (bid-ask)/(bid+ask) [-1,1]
     top_wall_side: str  # BID/ASK/NONE
     top_wall_usd: float
     top_wall_price: float
@@ -28,7 +28,6 @@ async def fetch_binance_depth(client: httpx.AsyncClient, symbol: str = "XRPUSDT"
 
 
 def _to_levels(levels: list[list[str]]) -> list[tuple[float, float]]:
-    # [price, qty] as strings
     out: list[tuple[float, float]] = []
     for p, q in levels:
         try:
@@ -38,12 +37,7 @@ def _to_levels(levels: list[list[str]]) -> list[tuple[float, float]]:
     return out
 
 
-def analyze_depth(
-    depth: dict,
-    symbol: str = "XRPUSDT",
-    depth_pct_band: float = 0.0025,  # 25 bps around mid
-    wall_usd_threshold: float = 250_000.0,
-) -> Optional[OrderBookSignal]:
+def analyze_depth(depth: dict, symbol: str = "XRPUSDT", depth_pct_band: float = 0.0025, wall_usd_threshold: float = 350_000.0) -> Optional[OrderBookSignal]:
     bids = _to_levels(depth.get("bids") or [])
     asks = _to_levels(depth.get("asks") or [])
     if not bids or not asks:
@@ -56,16 +50,12 @@ def analyze_depth(
         return None
 
     spread_bps = ((best_ask - best_bid) / mid) * 10_000.0
-
     band_low = mid * (1.0 - depth_pct_band)
     band_high = mid * (1.0 + depth_pct_band)
 
-    # Depth USD within band
     bid_depth_usd = 0.0
     ask_depth_usd = 0.0
-
-    # Wall detection (largest single level USD)
-    top_bid_wall = (0.0, 0.0)  # usd, price
+    top_bid_wall = (0.0, 0.0)
     top_ask_wall = (0.0, 0.0)
 
     for price, qty in bids:
@@ -90,7 +80,6 @@ def analyze_depth(
     top_wall_side = "NONE"
     top_wall_usd = 0.0
     top_wall_price = 0.0
-
     if top_bid_wall[0] >= wall_usd_threshold or top_ask_wall[0] >= wall_usd_threshold:
         if top_bid_wall[0] >= top_ask_wall[0]:
             top_wall_side = "BID"
@@ -101,14 +90,5 @@ def analyze_depth(
             top_wall_usd = top_ask_wall[0]
             top_wall_price = top_ask_wall[1]
 
-    return OrderBookSignal(
-        symbol=symbol,
-        mid=mid,
-        spread_bps=spread_bps,
-        bid_depth_usd=bid_depth_usd,
-        ask_depth_usd=ask_depth_usd,
-        imbalance=imbalance,
-        top_wall_side=top_wall_side,
-        top_wall_usd=top_wall_usd,
-        top_wall_price=top_wall_price,
-    )
+    return OrderBookSignal(symbol=symbol, mid=mid, spread_bps=spread_bps, bid_depth_usd=bid_depth_usd, ask_depth_usd=ask_depth_usd,
+                           imbalance=imbalance, top_wall_side=top_wall_side, top_wall_usd=top_wall_usd, top_wall_price=top_wall_price)
