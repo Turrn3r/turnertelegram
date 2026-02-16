@@ -11,7 +11,6 @@ _DB_ENV = os.getenv("DB_PATH", DEFAULT_DB_PRIMARY)
 
 
 def _choose_db_path() -> str:
-    # Prefer the env path; if it’s under /data and not writable, fall back to /tmp.
     path = _DB_ENV
     try:
         parent = os.path.dirname(path) or "."
@@ -97,6 +96,27 @@ def init_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_flow_ts ON flow_events(ts_utc)")
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orderbook_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id TEXT NOT NULL UNIQUE,
+                ts_utc TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                mid REAL NOT NULL,
+                spread_bps REAL NOT NULL,
+                bid_depth_usd REAL NOT NULL,
+                ask_depth_usd REAL NOT NULL,
+                imbalance REAL NOT NULL,
+                top_wall_side TEXT NOT NULL,
+                top_wall_usd REAL NOT NULL,
+                top_wall_price REAL NOT NULL,
+                source TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ob_ts ON orderbook_signals(ts_utc)")
+
         conn.commit()
 
 
@@ -142,14 +162,7 @@ def get_last_candles(symbol: str, interval: str, limit: int = 300) -> list[dict]
 
     rows = list(reversed(rows))
     return [
-        {
-            "t": r["open_time_utc"],
-            "open": r["open"],
-            "high": r["high"],
-            "low": r["low"],
-            "close": r["close"],
-            "volume": r["volume"],
-        }
+        {"t": r["open_time_utc"], "open": r["open"], "high": r["high"], "low": r["low"], "close": r["close"], "volume": r["volume"]}
         for r in rows
     ]
 
@@ -201,6 +214,52 @@ def insert_flow_event(
                 VALUES(?,?,?,?,?,?,?,?)
                 """,
                 (event_id, ts.isoformat(), symbol, side, float(price), float(quantity), float(notional_usd), source),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def insert_orderbook_signal(
+    signal_id: str,
+    symbol: str,
+    mid: float,
+    spread_bps: float,
+    bid_depth_usd: float,
+    ask_depth_usd: float,
+    imbalance: float,
+    top_wall_side: str,
+    top_wall_usd: float,
+    top_wall_price: float,
+    source: str,
+    ts: Optional[datetime] = None,
+) -> bool:
+    ts = ts or datetime.now(timezone.utc)
+    with db() as conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO orderbook_signals(
+                    signal_id, ts_utc, symbol, mid, spread_bps, bid_depth_usd, ask_depth_usd,
+                    imbalance, top_wall_side, top_wall_usd, top_wall_price, source
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    signal_id,
+                    ts.isoformat(),
+                    symbol,
+                    float(mid),
+                    float(spread_bps),
+                    float(bid_depth_usd),
+                    float(ask_depth_usd),
+                    float(imbalance),
+                    top_wall_side,
+                    float(top_wall_usd),
+                    float(top_wall_price),
+                    source,
+                ),
             )
             conn.commit()
             return True
