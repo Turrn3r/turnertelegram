@@ -1,5 +1,6 @@
 import io
 import os
+import gc
 import logging
 from datetime import datetime, timezone
 
@@ -44,14 +45,20 @@ POST_TO_TELEGRAM = os.getenv("POST_TO_TELEGRAM", "true").lower() in ("1", "true"
 HAS_TELEGRAM = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and POST_TO_TELEGRAM)
 
 FETCH_EVERY_MINUTES = int(os.getenv("FETCH_EVERY_MINUTES", "15"))
+
 PRIMARY_INTERVAL = os.getenv("CANDLE_INTERVAL_PRIMARY", "15min").strip()
 CONTEXT_INTERVALS = [s.strip() for s in (os.getenv("CANDLE_INTERVALS_CONTEXT", "1h,4h") or "").split(",") if s.strip()]
-HISTORY_CANDLES = int(os.getenv("HISTORY_CANDLES", "320"))
+HISTORY_CANDLES = int(os.getenv("HISTORY_CANDLES", "280"))
+
+# Memory-safe chart controls (key for Fly)
+CHART_BARS = int(os.getenv("CHART_BARS", "220"))           # how many candles to plot
+CHART_DPI = int(os.getenv("CHART_DPI", "240"))             # raise carefully if you increase RAM
+RUN_ON_STARTUP = os.getenv("RUN_ON_STARTUP", "false").lower() in ("1", "true", "yes", "y")
 
 NEWS_ALERTS = os.getenv("NEWS_ALERTS", "true").lower() in ("1", "true", "yes", "y")
 NEWS_THRESHOLD = float(os.getenv("NEWS_THRESHOLD", "2.5"))
 NEWS_SEND_NEUTRAL = os.getenv("NEWS_SEND_NEUTRAL", "false").lower() in ("1", "true", "yes", "y")
-NEWS_MAX_PER_CYCLE = int(os.getenv("NEWS_MAX_PER_CYCLE", "10"))
+NEWS_MAX_PER_CYCLE = int(os.getenv("NEWS_MAX_PER_CYCLE", "8"))
 
 FLOW_ALERTS = os.getenv("FLOW_ALERTS", "true").lower() in ("1", "true", "yes", "y")
 FLOW_NOTIONAL_THRESHOLD_USD = float(os.getenv("FLOW_NOTIONAL_THRESHOLD_USD", "250000"))
@@ -62,7 +69,12 @@ OB_SPREAD_BPS_THRESHOLD = float(os.getenv("OB_SPREAD_BPS_THRESHOLD", "8"))
 OB_WALL_USD_THRESHOLD = float(os.getenv("OB_WALL_USD_THRESHOLD", "350000"))
 
 SYMBOLS = [SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL]
-LABELS = {SYMBOL_XRP: "XRP / USD", SYMBOL_GOLD: "Gold (XAU) / USD", SYMBOL_SILVER: "Silver (XAG) / USD", SYMBOL_OIL: "Oil (USOIL)"}
+LABELS = {
+    SYMBOL_XRP: "XRP / USD",
+    SYMBOL_GOLD: "Gold (XAU) / USD",
+    SYMBOL_SILVER: "Silver (XAG) / USD",
+    SYMBOL_OIL: "Oil (USOIL)",
+}
 
 
 def _human_tf(interval: str) -> str:
@@ -92,6 +104,10 @@ def _fmt_notional(x: float) -> str:
     return f"${x:,.0f}"
 
 
+def _emoji(sig: str) -> str:
+    return {"BUY": "🟢", "SELL": "🔴", "NEUTRAL": "🟡"}.get(sig, "🟡")
+
+
 async def _bot() -> Bot:
     return Bot(token=TELEGRAM_BOT_TOKEN)
 
@@ -117,11 +133,8 @@ def _df_from_candles(candles: list[dict]) -> pd.DataFrame:
 
 
 async def job_fetch_store_all_intervals() -> None:
-    """
-    Fetches candles for all symbols for primary + context intervals and stores into DB.
-    """
     intervals = [PRIMARY_INTERVAL] + CONTEXT_INTERVALS
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/edge-1.0"}) as client:
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/edge-oomsafe"}) as client:
         for sym in SYMBOLS:
             for interval in intervals:
                 try:
@@ -129,16 +142,12 @@ async def job_fetch_store_all_intervals() -> None:
                 except Exception as e:
                     log.exception("TwelveData fetch failed sym=%s interval=%s err=%s", sym, interval, e)
                     continue
+
                 for c in candles:
                     upsert_candle(sym, interval, c.t, c.open, c.high, c.low, c.close, c.volume, "twelvedata")
 
 
 async def job_post_charts_and_context() -> None:
-    """
-    Posts ONE lossless chart per asset:
-      - chart: primary interval with overlays
-      - caption: structure summary on primary + context trends (1h/4h) + event impacts
-    """
     if not HAS_TELEGRAM:
         return
 
@@ -147,47 +156,54 @@ async def job_post_charts_and_context() -> None:
     bot = await _bot()
 
     for sym in SYMBOLS:
-        primary = get_last_candles(sym, PRIMARY_INTERVAL, limit=HISTORY_CANDLES)
-        if len(primary) < 80:
+        primary = get_last_candles(sym, PRIMARY_INTERVAL, limit=max(CHART_BARS, 120))
+        if len(primary) < 120:
             continue
 
+        # cap bars plotted to reduce memory
+        primary_plot = primary[-CHART_BARS:]
+
         df_p = _df_from_candles(primary)
+        if df_p.empty or len(df_p) < 80:
+            continue
+
         ss_p = structure_summary(df_p)
         last_close = float(df_p["Close"].iloc[-1])
         prev_close = float(df_p["Close"].iloc[-2])
         ret = (last_close - prev_close) / prev_close * 100.0 if prev_close else 0.0
         arrow = "🟢" if ret >= 0 else "🔴"
 
-        # Context summaries (1h/4h)
+        # Context summaries (compact; no multi-line f-strings)
         ctx_lines = []
         for ctx in CONTEXT_INTERVALS:
-            ctx_c = get_last_candles(sym, ctx, limit=min(HISTORY_CANDLES, 400))
+            ctx_c = get_last_candles(sym, ctx, limit=240)
             df_c = _df_from_candles(ctx_c)
             if df_c.empty or len(df_c) < 50:
                 continue
             ss_c = structure_summary(df_c)
-            ctx_lines.append(f"`{ctx}` trend `{ss_c.trend}`  BOS `{ss_c.bos or '-'}`
-CHOCH `{ss_c.choch or '-'}`")
+            ctx_lines.append(
+                f"`{ctx}` trend `{ss_c.trend}`  BOS `{ss_c.bos or '-'}`  CHOCH `{ss_c.choch or '-'}`"
+            )
 
-        # Event impact snippets
         impacts = get_recent_event_impacts(sym, PRIMARY_INTERVAL, limit=3)
-        impact_lines = []
-        for it in impacts:
-            impact_lines.append(f"• `{it['candle_time_utc']}` move `{_fmt_pct(it['return_pct'])}`")
+        impact_lines = [f"• `{it['candle_time_utc']}` move `{_fmt_pct(it['return_pct'])}`" for it in impacts]
 
-        # Chart
         title = f"{LABELS.get(sym, sym)} — {human_tf}"
         footer = f"Close {_fmt_price(sym, last_close)} ({_fmt_pct(ret)}) • {now_utc} • EMA9/21 • RSI/ATR • pivots"
-        png = make_candlestick_png(CandleSeries(sym, primary), title=f"{title}\n{footer}", footer=footer, dpi=480)
 
-        # Caption designed for fast human scan
+        # Render memory-safe chart
+        png = make_candlestick_png(
+            CandleSeries(sym, primary_plot),
+            title=f"{title}\n{footer}",
+            footer=footer,
+            dpi=CHART_DPI,
+        )
+
         bos = ss_p.bos or "-"
         choch = ss_p.choch or "-"
         ph = f"{ss_p.last_pivot_high:.4f}" if ss_p.last_pivot_high else "-"
         pl = f"{ss_p.last_pivot_low:.4f}" if ss_p.last_pivot_low else "-"
-        atr_info = "-"
-        if ss_p.atr is not None:
-            atr_info = f"{ss_p.atr:.6f}".rstrip("0").rstrip(".")
+        atr_info = f"{ss_p.atr:.6f}".rstrip("0").rstrip(".") if ss_p.atr is not None else "-"
         regime = ss_p.atr_regime
 
         caption = (
@@ -200,23 +216,23 @@ CHOCH `{ss_c.choch or '-'}`")
 
         if ctx_lines:
             caption += "\n\n*Context (higher TF):*\n" + "\n".join(ctx_lines)
-
         if impact_lines:
-            caption += "\n\n*Recent event impact (since alert candle):*\n" + "\n".join(impact_lines)
+            caption += "\n\n*Recent event impact:*\n" + "\n".join(impact_lines)
 
-        caption += "\n\n_Lossless chart document for zoom + pattern work._"
+        caption += "\n\n_Lossless chart (document) for zoom clarity._"
 
         try:
             fname = f"{sym}_{PRIMARY_INTERVAL}_edge.png".replace("/", "_")
             await _send_png_document(bot, fname, png, caption)
         except Exception as e:
             log.exception("Telegram chart post failed sym=%s err=%s", sym, e)
+        finally:
+            # help Fly RAM
+            del png
+            gc.collect()
 
 
 async def job_news_alerts_and_link() -> None:
-    """
-    Sends news alerts and links them to candle close for impact tracking.
-    """
     if not (HAS_TELEGRAM and NEWS_ALERTS):
         return
 
@@ -229,6 +245,10 @@ async def job_news_alerts_and_link() -> None:
         if not inserted:
             continue
 
+        summary = (it.summary or "").strip()
+        if len(summary) > 420:
+            summary = summary[:420].rstrip() + "…"
+
         msg = (
             f"🌍 {_emoji(it.signal)} *International Announcement Alert*\n"
             f"*Signal:* `{it.signal}`  *Score:* `{it.score:+.2f}`\n"
@@ -238,13 +258,8 @@ async def job_news_alerts_and_link() -> None:
         )
         if it.link:
             msg += f"{it.link}\n"
-
-        summary = (it.summary or "").strip()
-        if len(summary) > 420:
-            summary = summary[:420].rstrip() + "…"
         if summary:
             msg += f"\n_{summary}_\n"
-
         msg += "\n_Disclaimer: automated scoring; verify before trading._"
 
         try:
@@ -252,7 +267,6 @@ async def job_news_alerts_and_link() -> None:
         except Exception as e:
             log.exception("Telegram news send failed: %s", e)
 
-        # Link event to each tagged asset symbol in primary interval
         tags = [t.strip() for t in (it.tags or "").split(",") if t.strip()]
         for sym in tags:
             if sym not in SYMBOLS:
@@ -261,36 +275,8 @@ async def job_news_alerts_and_link() -> None:
             if not latest:
                 continue
             candle_time, base_close = latest
-            # current impact starts at 0 (last_close == base_close)
             link_id = f"{it.guid}:{sym}:{PRIMARY_INTERVAL}:{candle_time}"
             upsert_event_link(link_id, it.guid, sym, PRIMARY_INTERVAL, candle_time, base_close, base_close, 0.0)
-
-
-def _emoji(sig: str) -> str:
-    return {"BUY": "🟢", "SELL": "🔴", "NEUTRAL": "🟡"}.get(sig, "🟡")
-
-
-async def job_update_event_impacts() -> None:
-    """
-    Updates event impact table values by comparing base_close to latest close.
-    Lightweight “since-event move” tracking.
-    """
-    for sym in SYMBOLS:
-        latest = find_nearest_candle_close(sym, PRIMARY_INTERVAL)
-        if not latest:
-            continue
-        candle_time, last_close = latest
-
-        # Update the last few links for this symbol
-        # We can’t easily query all links without adding more functions, so keep it simple:
-        # re-link only most recent events already recorded via get_recent_event_impacts,
-        # which implies prior insert exists.
-        impacts = get_recent_event_impacts(sym, PRIMARY_INTERVAL, limit=8)
-        for imp in impacts:
-            # We don’t have base_close here; do an approximate re-create link_id and let upsert update:
-            # (Since link_id is unique, we can’t update without base_close; so skip.)
-            # In a further iteration we’d store base_close in the query and update properly.
-            pass
 
 
 async def job_orderbook_alerts() -> None:
@@ -300,13 +286,14 @@ async def job_orderbook_alerts() -> None:
     now = datetime.now(timezone.utc)
     now_utc = now.strftime("%Y-%m-%d %H:%M UTC")
 
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/edge-1.0"}) as client:
+    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/edge-oomsafe"}) as client:
         try:
             depth = await fetch_binance_depth(client, symbol="XRPUSDT", limit=1000)
             sig = analyze_depth(depth, symbol="XRPUSDT", depth_pct_band=0.0025, wall_usd_threshold=OB_WALL_USD_THRESHOLD)
         except Exception as e:
             log.exception("Orderbook fetch/analyze failed: %s", e)
             return
+
     if not sig:
         return
 
@@ -318,8 +305,11 @@ async def job_orderbook_alerts() -> None:
 
     bucket = f"{int(sig.mid*10000)}|{int(sig.spread_bps)}|{round(sig.imbalance,2)}|{sig.top_wall_side}|{int(sig.top_wall_usd/10000)}"
     signal_id = f"ob:{bucket}"
-    if not insert_orderbook_signal(signal_id, sig.symbol, sig.mid, sig.spread_bps, sig.bid_depth_usd, sig.ask_depth_usd, sig.imbalance,
-                                  sig.top_wall_side, sig.top_wall_usd, sig.top_wall_price, "binance_depth", now):
+
+    if not insert_orderbook_signal(
+        signal_id, sig.symbol, sig.mid, sig.spread_bps, sig.bid_depth_usd, sig.ask_depth_usd, sig.imbalance,
+        sig.top_wall_side, sig.top_wall_usd, sig.top_wall_price, "binance_depth", now
+    ):
         return
 
     direction = "🟢 Bid dominance" if sig.imbalance > 0 else "🔴 Ask dominance"
@@ -332,7 +322,7 @@ async def job_orderbook_alerts() -> None:
     )
     if sig.top_wall_side != "NONE":
         msg += f"*Wall:* `{sig.top_wall_side}` `{_fmt_notional(sig.top_wall_usd)}` @ `{sig.top_wall_price:.4f}`\n"
-    msg += "\n_This is a liquidity/flow proxy (not identity-level institutional attribution)._"
+    msg += "\n_Proxy signal; not identity-level attribution._"
 
     try:
         bot = await _bot()
@@ -341,68 +331,27 @@ async def job_orderbook_alerts() -> None:
         log.exception("Orderbook telegram failed: %s", e)
 
 
-async def job_flow_alerts() -> None:
-    if not (HAS_TELEGRAM and FLOW_ALERTS):
-        return
-
-    url = "https://api.binance.com/api/v3/aggTrades"
-    params = {"symbol": "XRPUSDT", "limit": 200}
-    async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/edge-1.0"}) as client:
-        try:
-            r = await client.get(url, params=params, timeout=20)
-            r.raise_for_status()
-            rows = r.json()
-        except Exception as e:
-            log.exception("Flow fetch failed: %s", e)
-            return
-
-    bot = await _bot()
-    for row in rows:
-        px = float(row["p"])
-        qty = float(row["q"])
-        notional = px * qty
-        if notional < FLOW_NOTIONAL_THRESHOLD_USD:
-            continue
-
-        side = "SELL" if bool(row.get("m", False)) else "BUY"
-        event_id = f"binance-{row['a']}"
-        ts_utc = datetime.fromtimestamp(int(row["T"]) / 1000.0, tz=timezone.utc)
-        if not insert_flow_event(event_id, SYMBOL_XRP, side, px, qty, notional, "binance_agg_trade", ts_utc):
-            continue
-
-        direction = "🟢 BUY pressure" if side == "BUY" else "🔴 SELL pressure"
-        msg = (
-            "🐋 *XRP Aggressive Flow Alert*\n"
-            f"*Signal:* {direction}\n"
-            f"*Notional:* `{_fmt_notional(notional)}`\n"
-            f"*Price:* `{px:.4f}`\n"
-            f"*Size:* `{qty:,.0f} XRP`\n"
-            f"*Time:* `{ts_utc.isoformat()}`\n"
-            "_Proxy via Binance aggTrades; not identity attribution._"
-        )
-        try:
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
-        except Exception as e:
-            log.exception("Flow telegram failed: %s", e)
-
-
 @app.on_event("startup")
 async def startup():
     init_db()
 
-    # Initial fill + post
-    await job_fetch_store_all_intervals()
-    await job_post_charts_and_context()
-
+    # IMPORTANT: Keep startup lightweight to prevent OOM / slow boots
     scheduler.add_job(job_fetch_store_all_intervals, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
     scheduler.add_job(job_post_charts_and_context, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
 
     scheduler.add_job(job_news_alerts_and_link, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
     scheduler.add_job(job_orderbook_alerts, "interval", minutes=1, max_instances=1, coalesce=True)
-    scheduler.add_job(job_flow_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
 
     scheduler.start()
-    log.info("Scheduler started. HAS_TELEGRAM=%s", HAS_TELEGRAM)
+    log.info("Scheduler started. HAS_TELEGRAM=%s RUN_ON_STARTUP=%s", HAS_TELEGRAM, RUN_ON_STARTUP)
+
+    if RUN_ON_STARTUP:
+        # Run AFTER scheduler start, but still inside startup: do only the light fetch,
+        # charting runs on next interval to avoid memory spike at boot.
+        try:
+            await job_fetch_store_all_intervals()
+        except Exception as e:
+            log.exception("Startup fetch failed: %s", e)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -412,4 +361,11 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "telegram": HAS_TELEGRAM, "primary_interval": PRIMARY_INTERVAL, "context_intervals": CONTEXT_INTERVALS}
+    return {
+        "ok": True,
+        "telegram": HAS_TELEGRAM,
+        "primary_interval": PRIMARY_INTERVAL,
+        "context_intervals": CONTEXT_INTERVALS,
+        "chart_bars": CHART_BARS,
+        "chart_dpi": CHART_DPI,
+    }
