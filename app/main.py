@@ -3,20 +3,13 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from .storage import (
-    init_db,
-    insert_point,
-    last_n_points,
-    last_point,
-    previous_point,
-    insert_news_item,
-)
+from .storage import init_db, insert_point, last_n_points, last_point, previous_point, insert_news_item
 from .pricing import fetch_all, SYMBOL_XRP, SYMBOL_GOLD, SYMBOL_SILVER, SYMBOL_OIL
 from .charting import SeriesData, make_telegram_chart_png
 from .news import fetch_news
@@ -41,7 +34,6 @@ app = FastAPI()
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 scheduler = AsyncIOScheduler()
 
-
 def normalize_chat_id(chat_id: str) -> str:
     chat_id = (chat_id or "").strip()
     if chat_id.startswith("https://t.me/") or chat_id.startswith("http://t.me/"):
@@ -52,35 +44,21 @@ def normalize_chat_id(chat_id: str) -> str:
         chat_id = "@" + chat_id
     return chat_id
 
-
 TELEGRAM_CHAT_ID = normalize_chat_id(TELEGRAM_CHAT_ID_RAW)
-
 
 def _fmt_price(sym: str, px: float) -> str:
     return f"{px:,.4f}" if sym == SYMBOL_XRP else f"{px:,.2f}"
-
 
 def _pct_change(curr: float, prev: float) -> float:
     if prev == 0:
         return 0.0
     return (curr - prev) / prev * 100.0
 
-
 def _emoji(sig: str) -> str:
     return {"BUY": "🟢", "SELL": "🔴", "NEUTRAL": "🟡"}.get(sig, "🟡")
 
-
 async def job_fetch_and_store() -> None:
-    # pricing.fetch_all returns (quotes, candles) in some versions.
-    # This handles both: if only quotes are returned, it still works.
-    res = await fetch_all()
-
-    quotes = []
-    if isinstance(res, tuple) and len(res) >= 1:
-        quotes = res[0]
-    else:
-        quotes = res
-
+    quotes = await fetch_all()
     now = datetime.now(timezone.utc)
 
     if not quotes:
@@ -92,7 +70,6 @@ async def job_fetch_and_store() -> None:
 
     log.info("Stored quotes: %s", ", ".join([f"{q.symbol}={q.price}" for q in quotes]))
 
-
 async def job_post_channel_update() -> None:
     if not POST_TO_TELEGRAM:
         return
@@ -100,16 +77,15 @@ async def job_post_channel_update() -> None:
         log.warning("Telegram not configured (missing token or chat id)")
         return
 
-    # Build chart from stored points
     series = [SeriesData(symbol=sym, points=last_n_points(sym, limit=HISTORY_POINTS)) for sym in SYMBOLS]
 
     try:
         png = make_telegram_chart_png(series)
+        log.info("Chart PNG bytes=%d", len(png))
     except Exception as e:
         log.exception("Chart generation failed: %s", e)
         return
 
-    # Caption with last price and change vs previous point
     lines = []
     for sym in SYMBOLS:
         lp = last_point(sym)
@@ -117,7 +93,6 @@ async def job_post_channel_update() -> None:
         if not lp:
             lines.append(f"{sym}: n/a")
             continue
-
         curr = float(lp["price"])
         if pp:
             prev = float(pp["price"])
@@ -137,7 +112,6 @@ async def job_post_channel_update() -> None:
         log.info("Posted chart update to Telegram: %s", TELEGRAM_CHAT_ID)
     except Exception as e:
         log.exception("Telegram chart post failed: %s", e)
-
 
 async def job_news_alerts() -> None:
     if not (POST_TO_TELEGRAM and NEWS_ALERTS):
@@ -167,7 +141,6 @@ async def job_news_alerts() -> None:
         )
         if not inserted:
             continue
-
         if it.signal == "NEUTRAL" and not NEWS_SEND_NEUTRAL:
             continue
 
@@ -189,12 +162,9 @@ async def job_news_alerts() -> None:
 
     log.info("News job complete. Items=%d Sent=%d", len(items), sent)
 
-
 @app.on_event("startup")
 async def startup():
     init_db()
-
-    # Prime immediately
     await job_fetch_and_store()
 
     scheduler.add_job(job_fetch_and_store, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
@@ -202,19 +172,22 @@ async def startup():
     scheduler.add_job(job_news_alerts, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
 
     scheduler.start()
-    log.info("Scheduler started. Interval=%d minutes. ChatID=%s", FETCH_EVERY_MINUTES, TELEGRAM_CHAT_ID)
-
+    log.info("Scheduler started interval=%d chat_id=%s", FETCH_EVERY_MINUTES, TELEGRAM_CHAT_ID)
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request, "symbols": SYMBOLS})
-
 
 @app.get("/api/series")
 async def api_series(limit: int = 500):
     limit = max(10, min(limit, 2000))
     return {sym: last_n_points(sym, limit=limit) for sym in SYMBOLS}
 
+@app.get("/debug/chart.png")
+async def debug_chart_png():
+    series = [SeriesData(symbol=sym, points=last_n_points(sym, limit=HISTORY_POINTS)) for sym in SYMBOLS]
+    png = make_telegram_chart_png(series)
+    return Response(content=png, media_type="image/png")
 
 @app.get("/health")
 async def health():
