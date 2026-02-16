@@ -4,25 +4,62 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-DB_PATH = os.getenv("DB_PATH", "/tmp/prices.db")
+DEFAULT_DB_PRIMARY = "/data/prices.db"
+DEFAULT_DB_FALLBACK = "/tmp/prices.db"
+
+_DB_ENV = os.getenv("DB_PATH", DEFAULT_DB_PRIMARY)
+
+
+def _choose_db_path() -> str:
+    # Prefer the env path; if it’s under /data and not writable, fall back to /tmp.
+    path = _DB_ENV
+    try:
+        parent = os.path.dirname(path) or "."
+        os.makedirs(parent, exist_ok=True)
+        testfile = os.path.join(parent, ".write_test")
+        with open(testfile, "w") as f:
+            f.write("ok")
+        os.remove(testfile)
+        return path
+    except Exception:
+        parent = os.path.dirname(DEFAULT_DB_FALLBACK) or "."
+        os.makedirs(parent, exist_ok=True)
+        return DEFAULT_DB_FALLBACK
+
+
+DB_PATH = _choose_db_path()
+
+
+@contextmanager
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True) if os.path.dirname(DB_PATH) else None
-
     with db() as conn:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS price_points (
+            CREATE TABLE IF NOT EXISTS ohlc_points (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
-                ts_utc TEXT NOT NULL,
-                price REAL NOT NULL,
-                source TEXT NOT NULL
+                interval TEXT NOT NULL,
+                open_time_utc TEXT NOT NULL,
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume REAL,
+                source TEXT NOT NULL,
+                UNIQUE(symbol, interval, open_time_utc)
             )
             """
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_price_symbol_ts ON price_points(symbol, ts_utc)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ohlc ON ohlc_points(symbol, interval, open_time_utc)")
 
         conn.execute(
             """
@@ -63,80 +100,58 @@ def init_db() -> None:
         conn.commit()
 
 
-@contextmanager
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-
-def insert_point(symbol: str, price: float, source: str, ts: Optional[datetime] = None) -> None:
-    ts = ts or datetime.now(timezone.utc)
+def upsert_candle(
+    symbol: str,
+    interval: str,
+    open_time_utc: str,
+    o: float,
+    h: float,
+    l: float,
+    c: float,
+    v: Optional[float],
+    source: str,
+) -> None:
     with db() as conn:
         conn.execute(
-            "INSERT INTO price_points(symbol, ts_utc, price, source) VALUES(?,?,?,?)",
-            (symbol, ts.isoformat(), float(price), source),
+            """
+            INSERT INTO ohlc_points(symbol, interval, open_time_utc, open, high, low, close, volume, source)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(symbol, interval, open_time_utc)
+            DO UPDATE SET open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close,
+                          volume=excluded.volume, source=excluded.source
+            """,
+            (symbol, interval, open_time_utc, float(o), float(h), float(l), float(c), None if v is None else float(v), source),
         )
         conn.commit()
 
 
-def last_n_points(symbol: str, limit: int = 300) -> list[dict]:
-    limit = max(1, min(int(limit), 5000))
+def get_last_candles(symbol: str, interval: str, limit: int = 300) -> list[dict]:
+    limit = max(10, min(int(limit), 2000))
     with db() as conn:
         cur = conn.execute(
             """
-            SELECT ts_utc, price
-            FROM price_points
-            WHERE symbol=?
-            ORDER BY ts_utc DESC
+            SELECT open_time_utc, open, high, low, close, volume
+            FROM ohlc_points
+            WHERE symbol=? AND interval=?
+            ORDER BY open_time_utc DESC
             LIMIT ?
             """,
-            (symbol, limit),
+            (symbol, interval, limit),
         )
         rows = cur.fetchall()
 
-    # return ascending for charting
-    points = [{"ts": r["ts_utc"], "price": r["price"]} for r in reversed(rows)]
-    return points
-
-
-def last_point(symbol: str) -> Optional[dict]:
-    with db() as conn:
-        cur = conn.execute(
-            """
-            SELECT ts_utc, price, source
-            FROM price_points
-            WHERE symbol=?
-            ORDER BY ts_utc DESC
-            LIMIT 1
-            """,
-            (symbol,),
-        )
-        r = cur.fetchone()
-    if not r:
-        return None
-    return {"ts": r["ts_utc"], "price": r["price"], "source": r["source"]}
-
-
-def previous_point(symbol: str) -> Optional[dict]:
-    with db() as conn:
-        cur = conn.execute(
-            """
-            SELECT ts_utc, price, source
-            FROM price_points
-            WHERE symbol=?
-            ORDER BY ts_utc DESC
-            LIMIT 1 OFFSET 1
-            """,
-            (symbol,),
-        )
-        r = cur.fetchone()
-    if not r:
-        return None
-    return {"ts": r["ts_utc"], "price": r["price"], "source": r["source"]}
+    rows = list(reversed(rows))
+    return [
+        {
+            "t": r["open_time_utc"],
+            "open": r["open"],
+            "high": r["high"],
+            "low": r["low"],
+            "close": r["close"],
+            "volume": r["volume"],
+        }
+        for r in rows
+    ]
 
 
 def insert_news_item(
