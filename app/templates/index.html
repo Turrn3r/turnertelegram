@@ -5,31 +5,44 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>TurnerTelegram</title>
     <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
-      code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
-      .ok { color: #0a7; font-weight: 700; }
-      .bad { color: #c22; font-weight: 700; }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: #0b0f14;
+        color: #cfd6e6;
+      }
+      code { background: #121826; padding: 2px 6px; border-radius: 6px; color: #cfd6e6; }
+      .ok { color: #2de37a; font-weight: 800; }
+      .bad { color: #ff4d4d; font-weight: 800; }
+      .box { background: #0f1623; border: 1px solid #1f2a3a; border-radius: 10px; padding: 14px; margin: 14px 0; }
+      a { color: #8ea0ff; }
     </style>
   </head>
   <body>
     <h1>TurnerTelegram</h1>
 
-    <p>Interval: <code>{{ interval }}</code></p>
-    <p>Telegram configured: {% if telegram %}<span class="ok">YES</span>{% else %}<span class="bad">NO</span>{% endif %}</p>
-    <p>Health: <code>/health</code></p>
+    <div class="box">
+      <div>Interval: <code>{{ interval }}</code></div>
+      <div>Telegram configured: {% if telegram %}<span class="ok">YES</span>{% else %}<span class="bad">NO</span>{% endif %}</div>
+      <div>Extra RSS feeds enabled: {% if extra_feeds %}<span class="ok">YES</span>{% else %}<span class="bad">NO</span>{% endif %}</div>
+      <div>Health: <code>/health</code></div>
+    </div>
 
-    <h2>Symbols</h2>
-    <ul>
-      {% for s in symbols %}
-        <li><code>{{ s }}</code></li>
-      {% endfor %}
-    </ul>
+    <div class="box">
+      <h2>Symbols</h2>
+      <ul>
+        {% for s in symbols %}
+          <li><code>{{ s }}</code></li>
+        {% endfor %}
+      </ul>
+    </div>
 
-    <h2>Notes</h2>
-    <ul>
-      <li>Charts are sent individually to Telegram every cycle.</li>
-      <li>News sources are official/institutional RSS feeds; alerts are deduped in SQLite.</li>
-      <li>Set secrets in Fly: <code>TWELVEDATA_API_KEY</code>, <code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_CHAT_ID</code>.</li>
-    </ul>
+    <div class="box">
+      <h2>How to add international sources instantly</h2>
+      <p>Set <code>EXTRA_RSS_FEEDS</code> like:</p>
+      <p><code>fly secrets set EXTRA_RSS_FEEDS="boj|https://.../rss,ecb|https://.../rss"</code></p>
+      <p>Format: <code>sourcekey|url</code> comma-separated.</p>
+    </div>
   </body>
 </html>
