@@ -1,20 +1,23 @@
-app = "turnertelegram"
-primary_region = "ams"
+# fly.toml app configuration file generated for turnertelegram-5ktepw on 2026-02-16T16:50:00Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'turnertelegram-5ktepw'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
-
-[env]
-  DB_PATH = "/tmp/prices.db"
-  POST_TO_TELEGRAM = "true"
-  FETCH_EVERY_MINUTES = "15"
-  NEWS_ALERTS = "true"
-  NEWS_THRESHOLD = "2.5"
-  NEWS_SEND_NEUTRAL = "false"
 
 [http_service]
   internal_port = 8080
   force_https = true
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  auto_stop_machines = false
-  min_machines_running = 1
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
