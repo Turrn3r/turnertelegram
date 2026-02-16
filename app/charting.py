@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import io
 from dataclasses import dataclass
 from typing import Optional
