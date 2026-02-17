@@ -1,3 +1,4 @@
+# app/charting.py
 from __future__ import annotations
 
 import io
@@ -5,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Any
 
 import matplotlib
-matplotlib.use("Agg")  # required for Fly / headless
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter, date2num
 import pandas as pd
@@ -14,7 +15,7 @@ import pandas as pd
 @dataclass
 class CandleSeries:
     symbol: str
-    candles: List[Dict[str, Any]]  # each has t, open, high, low, close
+    candles: List[Dict[str, Any]]  # {t, open, high, low, close}
 
 
 def _to_df(candles: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -27,7 +28,7 @@ def _to_df(candles: List[Dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
-def make_candlestick_png(series: CandleSeries, title: str, footer: str = "", dpi: int = 240) -> bytes:
+def make_candlestick_png(series: CandleSeries, title: str, footer: str = "", dpi: int = 260) -> bytes:
     df = _to_df(series.candles)
     if df.empty:
         return b""
@@ -38,10 +39,11 @@ def make_candlestick_png(series: CandleSeries, title: str, footer: str = "", dpi
     l = df["low"].to_numpy()
     c = df["close"].to_numpy()
 
-    # dark theme close to "trading terminal"
     bg = "#0b0f1a"
     fg = "#e6edf3"
     grid = "#1f2a44"
+    up_color = "#2ee59d"
+    down_color = "#ff4d6d"
 
     fig = plt.figure(figsize=(12, 6), dpi=dpi, facecolor=bg)
     ax = fig.add_subplot(111, facecolor=bg)
@@ -55,38 +57,22 @@ def make_candlestick_png(series: CandleSeries, title: str, footer: str = "", dpi
     if footer:
         ax.text(0.01, 0.01, footer, transform=ax.transAxes, color=fg, fontsize=9, alpha=0.9, va="bottom")
 
-    # candle width based on time gaps
-    if len(x) >= 2:
-        w = (x[1] - x[0]) * 0.7
-    else:
-        w = 0.0005
+    w = (x[1] - x[0]) * 0.7 if len(x) >= 2 else 0.0005
 
-    up_color = "#2ee59d"
-    down_color = "#ff4d6d"
-
-    # draw candles (manual: wick + body)
     for i in range(len(x)):
         color = up_color if c[i] >= o[i] else down_color
-
-        # wick
         ax.vlines(x[i], l[i], h[i], color=color, linewidth=1.0, alpha=0.95)
-
-        # body
         body_low = min(o[i], c[i])
         body_high = max(o[i], c[i])
         height = max(body_high - body_low, 1e-12)
-        ax.add_patch(
-            plt.Rectangle((x[i] - w / 2, body_low), w, height, facecolor=color, edgecolor=color, linewidth=0.8)
-        )
+        ax.add_patch(plt.Rectangle((x[i] - w/2, body_low), w, height,
+                                   facecolor=color, edgecolor=color, linewidth=0.8))
 
     ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
     ax.set_xlabel("Time (UTC)", color=fg, labelpad=8)
     ax.set_ylabel("Price", color=fg, labelpad=8)
-
-    # margins
     ax.margins(x=0.02)
 
-    # render to png bytes
     buf = io.BytesIO()
     fig.tight_layout()
     fig.savefig(buf, format="png", facecolor=bg, bbox_inches="tight")
