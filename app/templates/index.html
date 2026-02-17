@@ -7,14 +7,22 @@
     <style>
       body { margin: 0; padding: 24px; background: #0b0f14; color: #cfd6e6; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
       .box { background: #0f1623; border: 1px solid #1f2a3a; border-radius: 10px; padding: 14px; margin: 14px 0; }
+      a { color: #8ea0ff; text-decoration: none; font-weight: 700; }
+      a:hover { text-decoration: underline; }
       code { background: #121826; padding: 2px 6px; border-radius: 6px; color: #cfd6e6; }
     </style>
   </head>
   <body>
     <h1>TurnerTelegram</h1>
+
     <div class="box">
       <div>Health: <code>/health</code></div>
-      <div>Status: OK</div>
+      <div>Latest signal: <code>/api/signal/latest</code></div>
+    </div>
+
+    <div class="box">
+      <div><a href="/trade">Open Trade Panel →</a></div>
+      <div style="opacity:.8;margin-top:8px;">Connect MetaMask, load latest bot signal, place via Ostium.</div>
     </div>
   </body>
 </html>
