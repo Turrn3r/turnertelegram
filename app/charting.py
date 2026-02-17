@@ -1,131 +1,95 @@
 from __future__ import annotations
 
 import io
-import os
+from dataclasses import dataclass
+from typing import List, Dict, Any
 
 import matplotlib
-matplotlib.use("Agg")
-
+matplotlib.use("Agg")  # required for Fly / headless
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter, date2num
 import pandas as pd
-import mplfinance as mpf
-
-from dataclasses import dataclass
-
-from .analytics import rsi as calc_rsi, atr as calc_atr, pivots as calc_pivots
 
 
 @dataclass
 class CandleSeries:
     symbol: str
-    candles: list[dict]
+    candles: List[Dict[str, Any]]  # each has t, open, high, low, close
 
 
-def _to_df(candles: list[dict]) -> pd.DataFrame:
-    if not candles:
-        return pd.DataFrame()
-
+def _to_df(candles: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(candles)
     df["t"] = pd.to_datetime(df["t"], utc=True, errors="coerce")
     df = df.dropna(subset=["t", "open", "high", "low", "close"]).sort_values("t")
-    df = df.set_index("t")
-
-    df = df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"})
-    for col in ["Open", "High", "Low", "Close"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    if "Volume" in df.columns:
-        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
-
-    return df.dropna(subset=["Open", "High", "Low", "Close"])
+    for c in ["open", "high", "low", "close"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close"])
+    return df
 
 
-def _brand(key: str, default: str) -> str:
-    return (os.getenv(key, "") or default).strip()
-
-
-def _dark_style() -> mpf.MpfStyle:
-    face = _brand("BRAND_BG", "#0b0f14")
-    grid = _brand("BRAND_GRID", "#243042")
-    text = _brand("BRAND_TEXT", "#cfd6e6")
-    up = _brand("BRAND_UP", "#2de37a")
-    down = _brand("BRAND_DOWN", "#ff4d4d")
-
-    marketcolors = mpf.make_marketcolors(up=up, down=down, edge="inherit", wick="inherit", volume="inherit")
-    return mpf.make_mpf_style(
-        base_mpf_style="nightclouds",
-        marketcolors=marketcolors,
-        facecolor=face,
-        figcolor=face,
-        gridcolor=grid,
-        rc={
-            "axes.labelcolor": text,
-            "xtick.color": text,
-            "ytick.color": text,
-            "text.color": text,
-            "axes.edgecolor": grid,
-            "axes.grid": True,
-            "grid.alpha": 0.22,
-            "font.size": 10,
-        },
-    )
-
-
-def make_candlestick_png(series: CandleSeries, title: str, footer: str, dpi: int = 240) -> bytes:
+def make_candlestick_png(series: CandleSeries, title: str, footer: str = "", dpi: int = 240) -> bytes:
     df = _to_df(series.candles)
-    style = _dark_style()
-    accent = _brand("BRAND_ACCENT", "#8ea0ff")
+    if df.empty:
+        return b""
 
-    if df.empty or len(df) < 60:
-        import matplotlib.pyplot as plt
+    x = date2num(df["t"].dt.to_pydatetime())
+    o = df["open"].to_numpy()
+    h = df["high"].to_numpy()
+    l = df["low"].to_numpy()
+    c = df["close"].to_numpy()
 
-        fig = plt.figure(figsize=(10, 6), dpi=dpi)
-        fig.patch.set_facecolor(_brand("BRAND_BG", "#0b0f14"))
-        ax = fig.add_subplot(111)
-        ax.set_title(title, color=_brand("BRAND_TEXT", "#cfd6e6"), fontsize=14, fontweight="bold")
-        ax.text(0.5, 0.5, "NO DATA", ha="center", va="center", fontsize=24, color=_brand("BRAND_TEXT", "#cfd6e6"))
-        ax.axis("off")
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.30)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
+    # dark theme close to "trading terminal"
+    bg = "#0b0f1a"
+    fg = "#e6edf3"
+    grid = "#1f2a44"
 
-    # Indicators (lightweight)
-    r = calc_rsi(df["Close"], 14)
-    a = calc_atr(df, 14)
+    fig = plt.figure(figsize=(12, 6), dpi=dpi, facecolor=bg)
+    ax = fig.add_subplot(111, facecolor=bg)
 
-    # Pivot markers
-    ph, pl = calc_pivots(df, 3, 3)
-    ph_y = df["High"].where(ph, other=float("nan"))
-    pl_y = df["Low"].where(pl, other=float("nan"))
+    ax.grid(True, color=grid, alpha=0.55, linewidth=0.6)
+    ax.tick_params(colors=fg, labelsize=10)
+    for spine in ax.spines.values():
+        spine.set_color(grid)
 
-    apds = [
-        mpf.make_addplot(r, panel=1, color=accent, width=1.0, ylabel="RSI"),
-        mpf.make_addplot(a, panel=2, color=accent, width=1.0, ylabel="ATR"),
-        mpf.make_addplot(ph_y, type="scatter", markersize=25, marker="^", color=accent),
-        mpf.make_addplot(pl_y, type="scatter", markersize=25, marker="v", color=accent),
-    ]
+    ax.set_title(title, color=fg, fontsize=14, pad=14, fontweight="bold")
+    if footer:
+        ax.text(0.01, 0.01, footer, transform=ax.transAxes, color=fg, fontsize=9, alpha=0.9, va="bottom")
 
-    # IMPORTANT: keep figsize moderate to avoid RAM spikes
-    fig, _axes = mpf.plot(
-        df,
-        type="candle",
-        style=style,
-        figsize=(11.0, 7.0),
-        returnfig=True,
-        mav=(9, 21),
-        panel_ratios=(3, 1, 1),
-        addplot=apds,
-        datetime_format="%H:%M",
-        xrotation=0,
-        tight_layout=True,
-        update_width_config=dict(candle_linewidth=1.0, candle_width=0.65),
-    )
+    # candle width based on time gaps
+    if len(x) >= 2:
+        w = (x[1] - x[0]) * 0.7
+    else:
+        w = 0.0005
 
-    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.985, color=_brand("BRAND_TEXT", "#cfd6e6"))
-    fig.text(0.01, 0.01, footer, color=accent, fontsize=10)
+    up_color = "#2ee59d"
+    down_color = "#ff4d6d"
 
+    # draw candles (manual: wick + body)
+    for i in range(len(x)):
+        color = up_color if c[i] >= o[i] else down_color
+
+        # wick
+        ax.vlines(x[i], l[i], h[i], color=color, linewidth=1.0, alpha=0.95)
+
+        # body
+        body_low = min(o[i], c[i])
+        body_high = max(o[i], c[i])
+        height = max(body_high - body_low, 1e-12)
+        ax.add_patch(
+            plt.Rectangle((x[i] - w / 2, body_low), w, height, facecolor=color, edgecolor=color, linewidth=0.8)
+        )
+
+    ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+    ax.set_xlabel("Time (UTC)", color=fg, labelpad=8)
+    ax.set_ylabel("Price", color=fg, labelpad=8)
+
+    # margins
+    ax.margins(x=0.02)
+
+    # render to png bytes
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0.25)
-    matplotlib.pyplot.close(fig)
+    fig.tight_layout()
+    fig.savefig(buf, format="png", facecolor=bg, bbox_inches="tight")
+    plt.close(fig)
     buf.seek(0)
     return buf.read()
