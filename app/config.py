@@ -1,25 +1,50 @@
-SYMBOL = "XAUUSD"
-LABEL = "Gold (XAU) / USD"
+from __future__ import annotations
 
-PRIMARY_INTERVAL = "1min"
-PLOT_WINDOW_MINUTES = 15
-ANALYSIS_LOOKBACK_1M = 720
-CHART_DPI = 260
+from dataclasses import dataclass
 
-FETCH_CANDLES_EVERY_SECONDS = 60
-POST_EVERY_MINUTES = 15
-SIGNAL_EVAL_EVERY_SECONDS = 60
-NEWS_POLL_EVERY_SECONDS = 180
-MACRO_POLL_EVERY_SECONDS = 300
+# =========================
+# GOLD INTELLIGENCE CONFIG
+# =========================
 
-TRADE_MIN_CONF = 82
-TRADE_COOLDOWN_SEC = 1800
-TRADE_NOVELTY_PX = 0.0012
+@dataclass(frozen=True)
+class Settings:
+    # Instrument
+    symbol: str = "XAUUSD"
+    label: str = "Gold (XAU) / USD"
 
-TP1_R = 1.5
-TP2_R = 2.5
+    # Candle config
+    interval: str = "1min"
+    plot_window_minutes: int = 15
+    analysis_lookback_1m: int = 720  # 12h
 
-NEWS_ENABLED = True
-MACRO_ENABLED = True
-NEWS_MAX_ITEMS = 8
-NEWS_RELEVANCE_MIN = 0.20
+    # Scheduling
+    fetch_candles_every_sec: int = 60
+    news_poll_every_sec: int = 180
+    macro_poll_every_sec: int = 300
+    evaluate_every_sec: int = 60
+    post_chart_every_min: int = 15
+
+    # Signal gating
+    min_confidence: int = 84
+    trade_cooldown_sec: int = 1800       # 30 min
+    novelty_entry_frac: float = 0.0012   # 0.12%
+
+    # Risk model
+    sl_atr_mult: float = 1.10
+    tp1_r: float = 1.6
+    tp2_r: float = 2.7
+
+    # News/Macro usage
+    enable_news: bool = True
+    enable_macro: bool = True
+    news_max_items: int = 12
+    news_relevance_min: float = 0.20
+
+    # Event-risk suppression: do not open new trades when a high impact event is close
+    suppress_new_trades_if_event_within_min: int = 35
+
+    # Chart rendering
+    chart_dpi: int = 260
+
+
+SETTINGS = Settings()
