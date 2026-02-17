@@ -1,5 +1,4 @@
 import io
-import os
 import gc
 import math
 import time
@@ -29,42 +28,55 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("turnertelegram")
 
 app = FastAPI()
-templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+templates = Jinja2Templates(directory="app/templates")
 scheduler = AsyncIOScheduler()
 
-# Telegram
+# -------------------------
+# REAL SECRETS (keep as env)
+# -------------------------
+import os
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID", "") or "").strip()
-POST_TO_TELEGRAM = os.getenv("POST_TO_TELEGRAM", "true").lower() in ("1", "true", "yes", "y")
-HAS_TELEGRAM = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and POST_TO_TELEGRAM)
 
-# Scheduling
-FETCH_EVERY_MINUTES = int(os.getenv("FETCH_EVERY_MINUTES", "15"))
+HAS_TELEGRAM = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
-# XRP-only
+# ------------------------------------
+# NON-SECRETS (hardcoded config knobs)
+# ------------------------------------
+# System focus
 SYMBOL = SYMBOL_XRP
 LABEL = "XRP / USD"
 
+# Scheduling
+FETCH_EVERY_MINUTES = 15  # post chart+rundown cadence
+FETCH_CANDLES_EVERY_SECONDS = 60  # pull 1m candles every minute
+
 # Candles
 PRIMARY_INTERVAL = "1min"
-PLOT_WINDOW_MINUTES = int(os.getenv("PLOT_WINDOW_MINUTES", "15"))      # plot last 15 x 1m candles
-ANALYSIS_LOOKBACK_1M = int(os.getenv("ANALYSIS_LOOKBACK_1M", "360"))   # 6h of 1m candles for structure/ATR
-CHART_DPI = int(os.getenv("CHART_DPI", "260"))
+PLOT_WINDOW_MINUTES = 15         # show last 15 minutes of 1m candles
+ANALYSIS_LOOKBACK_1M = 360       # 6h history for structure/ATR/RSI/EMAs
+CHART_DPI = 260                  # crisp zoom
 
-# Orderbook alerts (filtered + anomaly-based)
-ORDERBOOK_ALERTS = os.getenv("ORDERBOOK_ALERTS", "true").lower() in ("1", "true", "yes", "y")
-OB_WALL_USD_THRESHOLD = float(os.getenv("OB_WALL_USD_THRESHOLD", "350000"))
-OB_CONFIRM_WINDOW = int(os.getenv("OB_CONFIRM_WINDOW", "5"))
-OB_CONFIRM_HITS = int(os.getenv("OB_CONFIRM_HITS", "3"))
-OB_COOLDOWN_SEC = int(os.getenv("OB_COOLDOWN_SEC", "900"))
+# Order book model (XRPUSDT on Binance) — higher-signal only
+ORDERBOOK_ALERTS = True
+OB_POLL_SECONDS = 30
+OB_WALL_USD_THRESHOLD = 350_000
 
-# Trade ideas
-TRADE_IDEAS = os.getenv("TRADE_IDEAS", "true").lower() in ("1", "true", "yes", "y")
-TRADE_MIN_CONF = int(os.getenv("TRADE_MIN_CONF", "75"))
-TRADE_COOLDOWN_SEC = int(os.getenv("TRADE_COOLDOWN_SEC", "1800"))  # 30 minutes
-TRADE_NOVELTY_PX = float(os.getenv("TRADE_NOVELTY_PX", "0.0015"))   # 0.15% change required to re-alert
+# Orderbook filtering gates
+OB_WINDOW = 50                   # rolling baseline samples (~25 minutes @ 30s)
+OB_CONFIRM_WINDOW = 5            # last 5 samples
+OB_CONFIRM_HITS = 3              # require 3 hits out of last 5
+OB_COOLDOWN_SEC = 900            # 15 minutes cooldown for non-major
 
-SEND_SYMBOL_ERRORS = os.getenv("SEND_SYMBOL_ERRORS", "true").lower() in ("1", "true", "yes", "y")
+# Trade ideas (Entry/TP/SL)
+TRADE_IDEAS = True
+TRADE_EVAL_SECONDS = 60
+TRADE_MIN_CONF = 78              # 0..100
+TRADE_COOLDOWN_SEC = 1800        # 30 min cooldown
+TRADE_NOVELTY_PX = 0.0015        # 0.15% entry shift required to re-alert same direction
+
+# Optional: send fetch errors to Telegram
+SEND_SYMBOL_ERRORS = True
 
 _last_ob: OrderBookSignal | None = None
 _last_ob_alert_ts = 0.0
@@ -74,9 +86,7 @@ _last_trade_ts = 0.0
 _last_trade_dir = None
 _last_trade_entry_mid = None
 
-# rolling history for anomaly scoring
-_OB_WINDOW = int(os.getenv("OB_WINDOW", "50"))
-_ob_hist = deque(maxlen=_OB_WINDOW)
+_ob_hist = deque(maxlen=OB_WINDOW)
 
 
 def _fmt_pct(x: float) -> str:
@@ -177,7 +187,7 @@ async def job_post_xrp_chart_and_rundown() -> None:
         return
 
     df_all = _df_from_candles(series)
-    if df_all.empty or len(df_all) < 60:
+    if df_all.empty or len(df_all) < 120:
         return
 
     plot_candles = series[-PLOT_WINDOW_MINUTES:]
@@ -238,7 +248,13 @@ async def job_orderbook_alerts() -> None:
     async with httpx.AsyncClient(headers={"User-Agent": "turnertelegram/ob"}) as client:
         try:
             depth = await fetch_binance_depth(client, symbol="XRPUSDT", limit=1000)
-            sig = analyze_depth(depth, symbol="XRPUSDT", depth_pct_band=0.0025, wall_usd_threshold=OB_WALL_USD_THRESHOLD, prev=_last_ob)
+            sig = analyze_depth(
+                depth,
+                symbol="XRPUSDT",
+                depth_pct_band=0.0025,
+                wall_usd_threshold=OB_WALL_USD_THRESHOLD,
+                prev=_last_ob
+            )
         except Exception as e:
             log.exception("Orderbook fetch/analyze failed: %s", e)
             return
@@ -251,8 +267,6 @@ async def job_orderbook_alerts() -> None:
         "imbalance": float(sig.imbalance),
         "bid_depth": float(sig.bid_depth_usd),
         "ask_depth": float(sig.ask_depth_usd),
-        "d_bid": float(sig.delta_bid_depth_usd),
-        "d_ask": float(sig.delta_ask_depth_usd),
         "wall_side": sig.top_wall_side,
         "wall_usd": float(sig.top_wall_usd),
     })
@@ -292,7 +306,7 @@ async def job_orderbook_alerts() -> None:
         _confirm(r["wall"], OB_CONFIRM_HITS, OB_CONFIRM_WINDOW)
     )
 
-    major = depth_vacuum and spread_stress
+    major = depth_vacuum and spread_stress  # rare stress combo
 
     if not confirmed and not major:
         _last_ob = sig
@@ -319,7 +333,8 @@ async def job_orderbook_alerts() -> None:
 
     if not insert_orderbook_signal(
         signal_id, sig.symbol, sig.mid, sig.spread_bps, sig.bid_depth_usd, sig.ask_depth_usd,
-        sig.imbalance, sig.top_wall_side, sig.top_wall_usd, sig.top_wall_price, "binance_depth", now
+        sig.imbalance, sig.top_wall_side, sig.top_wall_usd, sig.top_wall_price,
+        "binance_depth", now
     ):
         _last_ob = sig
         return
@@ -351,7 +366,7 @@ async def job_orderbook_alerts() -> None:
 
 async def job_trade_ideas() -> None:
     """
-    Uses candles + latest orderbook signal to propose Entry/SL/TP.
+    Uses candles + latest orderbook snapshot to propose Entry/SL/TP.
     Sends only on high confidence + cooldown + novelty.
     """
     global _last_trade_ts, _last_trade_dir, _last_trade_entry_mid
@@ -365,10 +380,9 @@ async def job_trade_ideas() -> None:
 
     series = get_last_candles(SYMBOL, PRIMARY_INTERVAL, limit=ANALYSIS_LOOKBACK_1M)
     df = _df_from_candles(series)
-    if df.empty or len(df) < 120:
+    if df.empty or len(df) < 180:
         return
 
-    # Build OB features from last observed orderbook snapshot
     ob = None
     if _last_ob is not None:
         ob = {
@@ -376,17 +390,17 @@ async def job_trade_ideas() -> None:
             "spread_bps": float(_last_ob.spread_bps),
             "top_wall_side": _last_ob.top_wall_side,
             "top_wall_usd": float(_last_ob.top_wall_usd),
-            "delta_bid_depth_usd": float(_last_ob.delta_bid_depth_usd),
-            "delta_ask_depth_usd": float(_last_ob.delta_ask_depth_usd),
+            "delta_bid_depth_usd": float(getattr(_last_ob, "delta_bid_depth_usd", 0.0)),
+            "delta_ask_depth_usd": float(getattr(_last_ob, "delta_ask_depth_usd", 0.0)),
         }
 
     idea: TradeIdea = build_trade_idea(df, ob, min_confidence=TRADE_MIN_CONF)
     if idea.direction == "NO_TRADE":
         return
 
-    entry_mid = sum(idea.entry) / 2 if idea.entry else None
+    entry_mid = (idea.entry[0] + idea.entry[1]) / 2 if idea.entry else None
 
-    # novelty gating: if same direction + entry is basically same, skip
+    # novelty gating: skip same-direction near-identical setup
     if _last_trade_dir == idea.direction and _last_trade_entry_mid and entry_mid:
         if abs(entry_mid - _last_trade_entry_mid) / max(_last_trade_entry_mid, 1e-12) < TRADE_NOVELTY_PX:
             return
@@ -418,10 +432,10 @@ async def job_trade_ideas() -> None:
 async def startup():
     init_db()
 
-    scheduler.add_job(job_fetch_store_1m, "interval", minutes=1, max_instances=1, coalesce=True)
+    scheduler.add_job(job_fetch_store_1m, "interval", seconds=FETCH_CANDLES_EVERY_SECONDS, max_instances=1, coalesce=True)
     scheduler.add_job(job_post_xrp_chart_and_rundown, "interval", minutes=FETCH_EVERY_MINUTES, max_instances=1, coalesce=True)
-    scheduler.add_job(job_orderbook_alerts, "interval", seconds=30, max_instances=1, coalesce=True)
-    scheduler.add_job(job_trade_ideas, "interval", seconds=60, max_instances=1, coalesce=True)
+    scheduler.add_job(job_orderbook_alerts, "interval", seconds=OB_POLL_SECONDS, max_instances=1, coalesce=True)
+    scheduler.add_job(job_trade_ideas, "interval", seconds=TRADE_EVAL_SECONDS, max_instances=1, coalesce=True)
 
     scheduler.start()
     log.info("Scheduler started. XRP-only. HAS_TELEGRAM=%s", HAS_TELEGRAM)
@@ -452,6 +466,6 @@ async def health():
             "cooldown_sec": OB_COOLDOWN_SEC,
             "confirm_window": OB_CONFIRM_WINDOW,
             "confirm_hits": OB_CONFIRM_HITS,
-            "rolling_window": _OB_WINDOW,
+            "rolling_window": OB_WINDOW,
         }
     }
