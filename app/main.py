@@ -17,6 +17,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Keyboar
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from urllib.parse import quote
 import logging
+import json
+import urllib.request
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,11 +29,11 @@ logger = logging.getLogger(__name__)
 bot_app = None
 
 def get_connect_keyboard(user_id: str):
-    """Build inline keyboard with Connect MetaMask button. Uses MetaMask deep link so mobile opens the app."""
+    """Build inline keyboard with Connect MetaMask button. Uses MetaMask app link so mobile opens the app directly."""
     web_url = os.getenv("PUBLIC_BASE_URL", "https://turnertelegram.fly.dev")
     dapp_url = f"{web_url}?user_key={user_id}"
-    # MetaMask deep link: opens MetaMask app on mobile with our page in the in-app browser
-    link_url = f"https://link.metamask.io/dapp/{quote(dapp_url, safe='')}"
+    # metamask.app.link opens MetaMask app on mobile with our page; on desktop opens MetaMask or browser
+    link_url = f"https://metamask.app.link/dapp/{quote(dapp_url, safe='')}"
     keyboard = [
         [InlineKeyboardButton("🔗 Connect MetaMask Wallet", url=link_url)],
     ]
@@ -52,11 +54,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link_url = f"{web_url}?user_key={user_id}"
 
     text = (
-        "👋 Welcome to the MetaMask Telegram Bot!\n\n"
-        "Tap the button below to open the MetaMask app and confirm the connection.\n\n"
-        "On mobile: MetaMask app will open and ask you to connect and sign.\n"
-        "On desktop: your browser will open; use the MetaMask extension.\n\n"
-        "Your User ID: " + user_id
+        "👋 Welcome!\n\n"
+        "Tap the button below to open MetaMask, connect your wallet, and sign to link it here.\n"
+        "Then return to this chat and tap My Wallet to see your balance."
     )
 
     await update.message.reply_text(
@@ -74,7 +74,7 @@ async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "🔗 Connect your MetaMask wallet\n\n"
-        "Tap the button below. MetaMask app will open (on mobile) and ask you to confirm the connection and sign."
+        "Tap the button below. MetaMask will open. Connect and sign there, then return here and tap My Wallet."
     )
 
     await update.message.reply_text(
@@ -82,15 +82,40 @@ async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_connect_keyboard(user_id),
     )
 
+def _fetch_eth_balance_sync(address: str) -> str:
+    """Fetch ETH balance from Arbitrum One RPC. Returns formatted string or '—' on error."""
+    try:
+        req = urllib.request.Request(
+            "https://arb1.arbitrum.io/rpc",
+            data=json.dumps({
+                "jsonrpc": "2.0",
+                "method": "eth_getBalance",
+                "params": [address, "latest"],
+                "id": 1,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        hex_balance = data.get("result") or "0x0"
+        wei = int(hex_balance, 16)
+        eth = wei / 1e18
+        return f"{eth:.6g}" if eth < 1e6 else f"{eth:,.2f}"
+    except Exception as e:
+        logger.debug("Balance fetch failed: %s", e)
+        return "—"
+
+
 async def wallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /wallet - show linked wallet or prompt to connect."""
+    """Handle /wallet - show linked wallet and balance, or prompt to connect."""
     user_id = str(update.effective_user.id)
     link_data = get_link(user_id)
 
     if not link_data:
         text = (
             "❌ No wallet linked yet.\n\n"
-            "Use the \"Connect Wallet\" button or /connect to link your MetaMask wallet."
+            "Tap \"Connect Wallet\" below to open MetaMask, connect, and sign. Then come back here and tap My Wallet."
         )
         await update.message.reply_text(
             text,
@@ -98,10 +123,12 @@ async def wallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         address, linked_at = link_data
+        balance_str = await asyncio.to_thread(_fetch_eth_balance_sync, address)
         text = (
             "💼 Your linked wallet\n\n"
             "Address: " + address + "\n"
-            "Linked (timestamp): " + str(linked_at)
+            "ETH (Arbitrum): " + balance_str + "\n"
+            "Linked: " + str(linked_at)
         )
         await update.message.reply_text(text)
 
