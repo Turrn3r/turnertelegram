@@ -12,12 +12,16 @@ input {
   padding: 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.18);
   background: rgba(0,0,0,0.25); color: #eef;
 }
-button {
+button, .btn {
   padding: 12px 14px; border-radius: 10px; border: 0; cursor: pointer;
-  font-weight: 600;
+  font-weight: 600; display: inline-block; text-decoration: none; text-align: center;
 }
-button.secondary { background: rgba(255,255,255,0.12); color: #eef; border: 1px solid rgba(255,255,255,0.18); }
+.btn.primary { background: #f6851b; color: #fff; }
+button.secondary, .btn.secondary { background: rgba(255,255,255,0.12); color: #eef; border: 1px solid rgba(255,255,255,0.18); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 .status { margin-top: 18px; padding: 14px; border-radius: 12px; background: rgba(0,0,0,0.25); }
+.status.error { background: rgba(200,80,80,0.2); }
+.status.success { background: rgba(80,200,80,0.2); }
 .mt { margin-top: 18px; }
+.mobile-only { margin: 16px 0; }
 code { background: rgba(0,0,0,0.35); padding: 2px 6px; border-radius: 6px; }
