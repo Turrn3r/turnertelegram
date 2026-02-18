@@ -28,22 +28,22 @@ flyctl auth login
 # Create the app (if not already created)
 flyctl apps create turnertelegram
 
-# Set required secrets
-flyctl secrets set TELEGRAM_BOT_TOKEN=your_bot_token_here
-flyctl secrets set PUBLIC_BASE_URL=https://turnertelegram.fly.dev
+# ⚠️ IMPORTANT: Create the database volume FIRST (required!)
+flyctl volumes create data -a turnertelegram -r ams -n 1
 
-# Create volume for database (if not exists)
-flyctl volumes create data --region ams
+# Set required secrets
+flyctl secrets set TELEGRAM_BOT_TOKEN=your_bot_token_here -a turnertelegram
+flyctl secrets set PUBLIC_BASE_URL=https://turnertelegram.fly.dev -a turnertelegram
 
 # Deploy
-flyctl deploy
+flyctl deploy -a turnertelegram
 ```
 
 ### 3. Verify Deployment
 
 ```bash
 # Check logs for bot startup
-flyctl logs | grep -i telegram
+flyctl logs -a turnertelegram | grep -i telegram
 
 # You should see:
 # ✅ Telegram bot started in polling mode
@@ -59,17 +59,29 @@ flyctl logs | grep -i telegram
 
 ## Troubleshooting
 
+### Error: "needs volumes with name 'data'"
+
+**Solution:** Create the volume first:
+```bash
+flyctl volumes create data -a turnertelegram -r ams -n 1
+```
+
+Then deploy again:
+```bash
+flyctl deploy -a turnertelegram
+```
+
 ### Bot Not Responding?
 
 1. **Check secrets are set:**
    ```bash
-   flyctl secrets list
+   flyctl secrets list -a turnertelegram
    ```
    You should see `TELEGRAM_BOT_TOKEN` and `PUBLIC_BASE_URL`
 
 2. **Check logs:**
    ```bash
-   flyctl logs
+   flyctl logs -a turnertelegram
    ```
    Look for:
    - `✅ Telegram bot started in polling mode` (success)
@@ -81,14 +93,23 @@ flyctl logs | grep -i telegram
    flyctl apps restart turnertelegram
    ```
 
+### Check Volume Status
+
+```bash
+# List volumes
+flyctl volumes list -a turnertelegram
+
+# You should see a volume named 'data' in region 'ams'
+```
+
 ### Webhook Mode (Optional - Recommended for Production)
 
 For better performance and reliability, use webhook mode:
 
 ```bash
-flyctl secrets set TELEGRAM_WEBHOOK_URL=https://turnertelegram.fly.dev/telegram-webhook
-flyctl secrets set TELEGRAM_WEBHOOK_SECRET=your_random_secret_here
-flyctl deploy
+flyctl secrets set TELEGRAM_WEBHOOK_URL=https://turnertelegram.fly.dev/telegram-webhook -a turnertelegram
+flyctl secrets set TELEGRAM_WEBHOOK_SECRET=your_random_secret_here -a turnertelegram
+flyctl deploy -a turnertelegram
 ```
 
 ## Local Development
@@ -148,3 +169,16 @@ turnertelegram/
 ├── fly.toml            # Fly.io configuration
 ├── requirements.txt    # Python dependencies
 └── readme.md           # This file
+
+```
+
+## Deployment Checklist
+
+Before deploying, make sure you have:
+
+- [ ] Created the Fly.io app: `flyctl apps create turnertelegram`
+- [ ] Created the volume: `flyctl volumes create data -a turnertelegram -r ams -n 1`
+- [ ] Set TELEGRAM_BOT_TOKEN secret
+- [ ] Set PUBLIC_BASE_URL secret
+- [ ] Deployed: `flyctl deploy -a turnertelegram`
+- [ ] Verified bot responds: Send `/start` to your bot
