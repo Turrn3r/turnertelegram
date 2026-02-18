@@ -4,7 +4,7 @@ This repo deploys a FastAPI app to Fly.io with Telegram bot integration:
 
 - Web UI with "Connect MetaMask"
 - Optional "Link wallet" flow using a server-issued nonce + signature verification
-- Stores user_key -> wallet_address in SQLite on a Fly volume
+- Stores user_key -> wallet_address in SQLite (ephemeral storage - no volume required)
 - **Telegram bot** with commands: `/start`, `/connect`, `/wallet`, `/help`
 
 ## Quick Start - Deploy to Fly.io
@@ -28,14 +28,11 @@ flyctl auth login
 # Create the app (if not already created)
 flyctl apps create turnertelegram
 
-# ⚠️ IMPORTANT: Create the database volume FIRST (required!)
-flyctl volumes create data -a turnertelegram -r ams -n 1
-
 # Set required secrets
 flyctl secrets set TELEGRAM_BOT_TOKEN=your_bot_token_here -a turnertelegram
 flyctl secrets set PUBLIC_BASE_URL=https://turnertelegram.fly.dev -a turnertelegram
 
-# Deploy
+# Deploy (no volume needed!)
 flyctl deploy -a turnertelegram
 ```
 
@@ -57,19 +54,14 @@ flyctl logs -a turnertelegram | grep -i telegram
 2. Send `/start` - you should get a welcome message
 3. Send `/connect` - you should get a link to connect MetaMask
 
-## Troubleshooting
+## Important Notes
 
-### Error: "needs volumes with name 'data'"
+### Database Storage
 
-**Solution:** Create the volume first:
-```bash
-flyctl volumes create data -a turnertelegram -r ams -n 1
-```
-
-Then deploy again:
-```bash
-flyctl deploy -a turnertelegram
-```
+The database is stored in `/tmp/app.db` (ephemeral storage):
+- ✅ **No volume creation needed** - works immediately
+- ⚠️ Data resets when the app restarts or redeploys
+- For persistent storage, you can add a volume later
 
 ### Bot Not Responding?
 
@@ -92,15 +84,6 @@ flyctl deploy -a turnertelegram
    ```bash
    flyctl apps restart turnertelegram
    ```
-
-### Check Volume Status
-
-```bash
-# List volumes
-flyctl volumes list -a turnertelegram
-
-# You should see a volume named 'data' in region 'ams'
-```
 
 ### Webhook Mode (Optional - Recommended for Production)
 
@@ -166,10 +149,9 @@ turnertelegram/
 │   ├── app.js           # Frontend JavaScript
 │   └── style.css        # Styling
 ├── Dockerfile           # Container definition
-├── fly.toml            # Fly.io configuration
+├── fly.toml            # Fly.io configuration (no volume required)
 ├── requirements.txt    # Python dependencies
 └── readme.md           # This file
-
 ```
 
 ## Deployment Checklist
@@ -177,8 +159,9 @@ turnertelegram/
 Before deploying, make sure you have:
 
 - [ ] Created the Fly.io app: `flyctl apps create turnertelegram`
-- [ ] Created the volume: `flyctl volumes create data -a turnertelegram -r ams -n 1`
 - [ ] Set TELEGRAM_BOT_TOKEN secret
 - [ ] Set PUBLIC_BASE_URL secret
 - [ ] Deployed: `flyctl deploy -a turnertelegram`
 - [ ] Verified bot responds: Send `/start` to your bot
+
+**Note:** No volume creation needed! The app uses ephemeral storage in `/tmp`.
