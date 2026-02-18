@@ -4,38 +4,34 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>Connect MetaMask</title>
+  <title>Link Wallet to Telegram</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main class="card">
-    <h1>Connect MetaMask</h1>
-    <p class="muted">Link your wallet to Telegram. Works in MetaMask app on mobile.</p>
+    <h1>Link Wallet to Telegram</h1>
+    <p class="muted" id="subtitle">Opening in MetaMask… Connect and sign to link.</p>
 
     <div id="openInMetaMask" class="mobile-only" style="display: none;">
-      <p>Tap to open in the MetaMask app and confirm the connection:</p>
+      <p>Tap to open in the MetaMask app:</p>
       <a id="metamaskDeepLink" href="#" class="btn primary">Open in MetaMask App</a>
     </div>
 
     <div id="connectFlow" style="display: none;">
+      <input id="userKey" type="hidden" />
+      <p id="userKeyDisplay" class="muted" style="margin-bottom: 12px;"></p>
       <div class="row">
-        <label>User key (from Telegram)</label>
-        <input id="userKey" type="text" placeholder="Your Telegram User ID" />
-      </div>
-      <div class="row">
-        <button id="connectBtn" class="btn primary">Connect MetaMask</button>
-        <button id="linkBtn" class="btn secondary" disabled>Link wallet (sign)</button>
+        <button id="connectBtn" class="btn primary">1. Connect MetaMask</button>
+        <button id="linkBtn" class="btn primary" disabled style="margin-top:8px">2. Link wallet to Telegram (sign)</button>
       </div>
       <div class="status">
         <div><strong>Status:</strong> <span id="status">Not connected</span></div>
         <div><strong>Address:</strong> <span id="address">—</span></div>
       </div>
+      <div id="successBlock" style="display: none; margin-top: 16px; padding: 12px; background: rgba(80,200,80,0.2); border-radius: 10px;">
+        <strong>Done!</strong> Return to Telegram and tap <strong>My Wallet</strong> to confirm.
+      </div>
     </div>
-
-    <details class="mt">
-      <summary>What does "link" do?</summary>
-      <p>It requests a nonce from the server, asks MetaMask to sign a message, then the server verifies the signature and stores user_key → wallet_address.</p>
-    </details>
   </main>
   <script src="/static/app.js"></script>
 </body>
