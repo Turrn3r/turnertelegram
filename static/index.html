@@ -1,41 +1,42 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <title>Connect MetaMask</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main class="card">
     <h1>Connect MetaMask</h1>
-    <p class="muted">This demo lets a user connect their MetaMask wallet and (optionally) link it to a user key via signature.</p>
+    <p class="muted">Link your wallet to Telegram. Works in MetaMask app on mobile.</p>
 
-    <div class="row">
-      <label>User key (optional but recommended)</label>
-      <input id="userKey" placeholder="e.g. telegram_12345" />
-      <small class="muted">If you plan to use a bot: set this to the Telegram user id (or pass it as ?user_key=...)</small>
+    <div id="openInMetaMask" class="mobile-only" style="display: none;">
+      <p>Tap to open in the MetaMask app and confirm the connection:</p>
+      <a id="metamaskDeepLink" href="#" class="btn primary">Open in MetaMask App</a>
     </div>
 
-    <div class="row">
-      <button id="connectBtn">Connect MetaMask</button>
-      <button id="linkBtn" class="secondary" disabled>Link wallet (sign)</button>
-    </div>
-
-    <div class="status">
-      <div><strong>Status:</strong> <span id="status">Not connected</span></div>
-      <div><strong>Address:</strong> <span id="address">—</span></div>
+    <div id="connectFlow" style="display: none;">
+      <div class="row">
+        <label>User key (from Telegram)</label>
+        <input id="userKey" type="text" placeholder="Your Telegram User ID" />
+      </div>
+      <div class="row">
+        <button id="connectBtn" class="btn primary">Connect MetaMask</button>
+        <button id="linkBtn" class="btn secondary" disabled>Link wallet (sign)</button>
+      </div>
+      <div class="status">
+        <div><strong>Status:</strong> <span id="status">Not connected</span></div>
+        <div><strong>Address:</strong> <span id="address">—</span></div>
+      </div>
     </div>
 
     <details class="mt">
-      <summary>What does “link” do?</summary>
-      <p>
-        It requests a nonce from the server, asks MetaMask to sign a message, then the server verifies the signature and stores
-        <code>user_key → wallet_address</code> in SQLite.
-      </p>
+      <summary>What does "link" do?</summary>
+      <p>It requests a nonce from the server, asks MetaMask to sign a message, then the server verifies the signature and stores user_key → wallet_address.</p>
     </details>
   </main>
-
   <script src="/static/app.js"></script>
 </body>
 </html>
