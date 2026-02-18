@@ -1,25 +1,62 @@
-// MetaMask connection and wallet linking
-let account = null;
+// Mobile-first: open MetaMask app on mobile; connect + sign in MetaMask in-app browser or extension
+var account = null;
 
-// Check for user_key in URL params
-const urlParams = new URLSearchParams(window.location.search);
-const userKeyFromUrl = urlParams.get('user_key');
+var urlParams = new URLSearchParams(window.location.search);
+var userKeyFromUrl = urlParams.get('user_key');
 if (userKeyFromUrl) {
-  document.getElementById('userKey').value = userKeyFromUrl;
+  var userKeyEl = document.getElementById('userKey');
+  if (userKeyEl) userKeyEl.value = userKeyFromUrl;
+}
+
+function isMobile() {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
+}
+
+function updateStatus(msg, type) {
+  var statusEl = document.getElementById('status');
+  if (!statusEl) return;
+  statusEl.textContent = msg;
+  statusEl.className = type === 'error' ? 'error' : 'success';
+}
+
+function showConnectFlow() {
+  var openBlock = document.getElementById('openInMetaMask');
+  var flowBlock = document.getElementById('connectFlow');
+  if (openBlock) openBlock.style.display = 'none';
+  if (flowBlock) flowBlock.style.display = 'block';
+}
+
+function showOpenInMetaMask() {
+  var openBlock = document.getElementById('openInMetaMask');
+  var flowBlock = document.getElementById('connectFlow');
+  if (flowBlock) flowBlock.style.display = 'none';
+  if (openBlock) {
+    openBlock.style.display = 'block';
+    var dappUrl = window.location.href;
+    var deepLink = 'https://link.metamask.io/dapp/' + encodeURIComponent(dappUrl);
+    var a = document.getElementById('metamaskDeepLink');
+    if (a) a.href = deepLink;
+  }
 }
 
 async function connectMetaMask() {
   if (typeof window.ethereum === 'undefined') {
+    if (isMobile()) {
+      showOpenInMetaMask();
+      return;
+    }
     updateStatus('MetaMask not installed', 'error');
     return;
   }
 
   try {
-    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    var accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     account = accounts[0];
     updateStatus('Connected', 'success');
-    document.getElementById('address').textContent = account;
-    document.getElementById('linkBtn').disabled = false;
+    var addrEl = document.getElementById('address');
+    if (addrEl) addrEl.textContent = account;
+    var linkBtn = document.getElementById('linkBtn');
+    if (linkBtn) linkBtn.disabled = false;
   } catch (err) {
     updateStatus('Connection failed: ' + err.message, 'error');
   }
@@ -31,35 +68,29 @@ async function linkWallet() {
     return;
   }
 
-  const userKey = document.getElementById('userKey').value.trim();
+  var userKeyEl = document.getElementById('userKey');
+  var userKey = userKeyEl ? userKeyEl.value.trim() : '';
   if (!userKey) {
     updateStatus('Please enter a user key', 'error');
     return;
   }
 
   try {
-    // Get nonce from server
-    const nonceRes = await fetch('/api/nonce', {
+    var nonceRes = await fetch('/api/nonce', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_key: userKey })
     });
-    const nonceData = await nonceRes.json();
-    if (!nonceData.ok) {
-      throw new Error('Failed to get nonce');
-    }
+    var nonceData = await nonceRes.json();
+    if (!nonceData.ok) throw new Error('Failed to get nonce');
 
-    // Build message
-    const message = `Link this wallet to user: ${userKey}\nNonce: ${nonceData.nonce}`;
-
-    // Sign message with MetaMask
-    const signature = await window.ethereum.request({
+    var message = 'Link this wallet to user: ' + userKey + '\nNonce: ' + nonceData.nonce;
+    var signature = await window.ethereum.request({
       method: 'personal_sign',
       params: [message, account]
     });
 
-    // Send to server
-    const linkRes = await fetch('/api/link', {
+    var linkRes = await fetch('/api/link', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -69,7 +100,7 @@ async function linkWallet() {
       })
     });
 
-    const linkData = await linkRes.json();
+    var linkData = await linkRes.json();
     if (linkData.ok) {
       updateStatus('Wallet linked successfully!', 'success');
     } else {
@@ -80,25 +111,28 @@ async function linkWallet() {
   }
 }
 
-function updateStatus(msg, type) {
-  const statusEl = document.getElementById('status');
-  statusEl.textContent = msg;
-  statusEl.className = type === 'error' ? 'error' : 'success';
-}
-
-// Auto-connect if already connected
+// On load: if mobile and no ethereum, show "Open in MetaMask"; else show connect flow
 if (typeof window.ethereum !== 'undefined') {
   window.ethereum.request({ method: 'eth_accounts' })
-    .then(accounts => {
+    .then(function(accounts) {
       if (accounts.length > 0) {
         account = accounts[0];
         updateStatus('Connected', 'success');
-        document.getElementById('address').textContent = account;
-        document.getElementById('linkBtn').disabled = false;
+        var addrEl = document.getElementById('address');
+        if (addrEl) addrEl.textContent = account;
+        var linkBtn = document.getElementById('linkBtn');
+        if (linkBtn) linkBtn.disabled = false;
       }
-    });
+      showConnectFlow();
+    })
+    .catch(function() { showConnectFlow(); });
+} else if (isMobile()) {
+  showOpenInMetaMask();
+} else {
+  showConnectFlow();
 }
 
-// Event listeners
-document.getElementById('connectBtn').addEventListener('click', connectMetaMask);
-document.getElementById('linkBtn').addEventListener('click', linkWallet);
+var connectBtn = document.getElementById('connectBtn');
+var linkBtn = document.getElementById('linkBtn');
+if (connectBtn) connectBtn.addEventListener('click', connectMetaMask);
+if (linkBtn) linkBtn.addEventListener('click', linkWallet);
