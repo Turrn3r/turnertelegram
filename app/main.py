@@ -15,6 +15,7 @@ from .db import new_nonce, get_nonce, clear_nonce, save_link, get_link
 # Telegram bot imports
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from urllib.parse import quote
 import logging
 
 logging.basicConfig(
@@ -26,9 +27,11 @@ logger = logging.getLogger(__name__)
 bot_app = None
 
 def get_connect_keyboard(user_id: str):
-    """Build inline keyboard with Connect MetaMask button."""
+    """Build inline keyboard with Connect MetaMask button. Uses MetaMask deep link so mobile opens the app."""
     web_url = os.getenv("PUBLIC_BASE_URL", "https://turnertelegram.fly.dev")
-    link_url = f"{web_url}?user_key={user_id}"
+    dapp_url = f"{web_url}?user_key={user_id}"
+    # MetaMask deep link: opens MetaMask app on mobile with our page in the in-app browser
+    link_url = f"https://link.metamask.io/dapp/{quote(dapp_url, safe='')}"
     keyboard = [
         [InlineKeyboardButton("🔗 Connect MetaMask Wallet", url=link_url)],
     ]
@@ -50,11 +53,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "👋 Welcome to the MetaMask Telegram Bot!\n\n"
-        "Connect your MetaMask wallet to link it to this chat.\n\n"
-        "👇 Tap the button below to open the Connect page, then:\n"
-        "1. Connect MetaMask in your browser\n"
-        "2. Click \"Link wallet\" and sign the message\n"
-        "3. Come back here and use \"My Wallet\" to confirm\n\n"
+        "Tap the button below to open the MetaMask app and confirm the connection.\n\n"
+        "On mobile: MetaMask app will open and ask you to connect and sign.\n"
+        "On desktop: your browser will open; use the MetaMask extension.\n\n"
         "Your User ID: " + user_id
     )
 
@@ -73,8 +74,7 @@ async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "🔗 Connect your MetaMask wallet\n\n"
-        "Tap the button below to open the Connect page in your browser.\n"
-        "Then connect MetaMask and click \"Link wallet\" to sign."
+        "Tap the button below. MetaMask app will open (on mobile) and ask you to confirm the connection and sign."
     )
 
     await update.message.reply_text(
