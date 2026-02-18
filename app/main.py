@@ -101,41 +101,50 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize Telegram bot
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if bot_token:
-        bot_app = Application.builder().token(bot_token).build()
-        
-        # Add handlers
-        bot_app.add_handler(CommandHandler("start", start_command))
-        bot_app.add_handler(CommandHandler("connect", connect_command))
-        bot_app.add_handler(CommandHandler("wallet", wallet_command))
-        bot_app.add_handler(CommandHandler("help", help_command))
-        
-        # Start bot (webhook mode if WEBHOOK_URL is set, else polling)
-        webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
-        if webhook_url:
-            webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
-            await bot_app.bot.set_webhook(
-                url=webhook_url,
-                secret_token=webhook_secret if webhook_secret else None
-            )
-            logger.info(f"Telegram webhook set to {webhook_url}")
-        else:
-            # Start polling in background
-            await bot_app.initialize()
-            await bot_app.start()
-            await bot_app.updater.start_polling()
-            logger.info("Telegram bot started in polling mode")
+        try:
+            bot_app = Application.builder().token(bot_token).build()
+            
+            # Add handlers
+            bot_app.add_handler(CommandHandler("start", start_command))
+            bot_app.add_handler(CommandHandler("connect", connect_command))
+            bot_app.add_handler(CommandHandler("wallet", wallet_command))
+            bot_app.add_handler(CommandHandler("help", help_command))
+            
+            # Start bot (webhook mode if WEBHOOK_URL is set, else polling)
+            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
+            if webhook_url:
+                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+                await bot_app.initialize()
+                await bot_app.start()
+                await bot_app.bot.set_webhook(
+                    url=webhook_url,
+                    secret_token=webhook_secret if webhook_secret else None
+                )
+                logger.info(f"✅ Telegram webhook set to {webhook_url}")
+            else:
+                # Start polling in background
+                await bot_app.initialize()
+                await bot_app.start()
+                await bot_app.updater.start_polling(drop_pending_updates=True)
+                logger.info("✅ Telegram bot started in polling mode")
+        except Exception as e:
+            logger.error(f"❌ Failed to start Telegram bot: {e}", exc_info=True)
+            bot_app = None
     else:
-        logger.warning("TELEGRAM_BOT_TOKEN not set, Telegram bot disabled")
+        logger.warning("⚠️ TELEGRAM_BOT_TOKEN not set, Telegram bot disabled")
     
     yield
     
     # Shutdown: Stop Telegram bot
     if bot_app:
-        if bot_app.updater.running:
-            await bot_app.updater.stop()
-        await bot_app.stop()
-        await bot_app.shutdown()
-        logger.info("Telegram bot stopped")
+        try:
+            if hasattr(bot_app, 'updater') and bot_app.updater and bot_app.updater.running:
+                await bot_app.updater.stop()
+            await bot_app.stop()
+            await bot_app.shutdown()
+            logger.info("Telegram bot stopped")
+        except Exception as e:
+            logger.error(f"Error stopping bot: {e}")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -148,7 +157,7 @@ def index():
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    return {"ok": True, "bot_status": "running" if bot_app else "disabled"}
 
 # Telegram webhook endpoint (if using webhook mode)
 @app.post("/telegram-webhook")
@@ -164,10 +173,14 @@ async def telegram_webhook(request: Request):
         if secret_header != webhook_secret:
             raise HTTPException(403, "Invalid webhook secret")
     
-    update_data = await request.json()
-    update = Update.de_json(update_data, bot_app.bot)
-    await bot_app.process_update(update)
-    return {"ok": True}
+    try:
+        update_data = await request.json()
+        update = Update.de_json(update_data, bot_app.bot)
+        await bot_app.process_update(update)
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
+        raise HTTPException(500, f"Error processing update: {str(e)}")
 
 # ---- Wallet link flow (signature verification) ----
 
@@ -188,7 +201,7 @@ def api_nonce(req: NonceReq):
     return {"ok": True, "nonce": new_nonce(req.user_key)}
 
 @app.post("/api/link")
-def api_link(req: LinkReq):
+async def api_link(req: LinkReq):
     row = get_nonce(req.user_key)
     if not row:
         raise HTTPException(400, "missing_nonce")
@@ -208,12 +221,10 @@ def api_link(req: LinkReq):
     # Notify user via Telegram if bot is available
     if bot_app:
         try:
-            asyncio.create_task(
-                bot_app.bot.send_message(
-                    chat_id=req.user_key,
-                    text=f"✅ Wallet linked successfully!\n\nAddress: `{req.address}`",
-                    parse_mode='Markdown'
-                )
+            await bot_app.bot.send_message(
+                chat_id=req.user_key,
+                text=f"✅ Wallet linked successfully!\n\nAddress: `{req.address}`",
+                parse_mode='Markdown'
             )
         except Exception as e:
             logger.error(f"Failed to send Telegram notification: {e}")
