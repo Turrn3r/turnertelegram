@@ -7,29 +7,106 @@ This repo deploys a FastAPI app to Fly.io with Telegram bot integration:
 - Stores user_key -> wallet_address in SQLite on a Fly volume
 - **Telegram bot** with commands: `/start`, `/connect`, `/wallet`, `/help`
 
-## Setup
+## Quick Start - Deploy to Fly.io
 
-1. Get a Telegram bot token from [@BotFather](https://t.me/BotFather)
-2. Set Fly.io secrets:
-   ```bash
-   flyctl secrets set TELEGRAM_BOT_TOKEN=your_bot_token
-   flyctl secrets set PUBLIC_BASE_URL=https://turnertelegram.fly.dev
-   # Optional: For webhook mode (recommended for production)
-   flyctl secrets set TELEGRAM_WEBHOOK_URL=https://turnertelegram.fly.dev/telegram-webhook
-   flyctl secrets set TELEGRAM_WEBHOOK_SECRET=your_secret_token
-   ```
-3. Deploy:
-   ```bash
-   flyctl deploy
-   ```
+### 1. Get Telegram Bot Token
 
-## Local run
+1. Message [@BotFather](https://t.me/BotFather) on Telegram
+2. Send `/newbot` and follow instructions
+3. Copy your bot token (looks like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+### 2. Deploy to Fly.io
 
 ```bash
+# Clone the repo (if you haven't already)
+git clone https://github.com/Turrn3r/turnertelegram.git
+cd turnertelegram
+
+# Login to Fly.io (if not already logged in)
+flyctl auth login
+
+# Create the app (if not already created)
+flyctl apps create turnertelegram
+
+# Set required secrets
+flyctl secrets set TELEGRAM_BOT_TOKEN=your_bot_token_here
+flyctl secrets set PUBLIC_BASE_URL=https://turnertelegram.fly.dev
+
+# Create volume for database (if not exists)
+flyctl volumes create data --region ams
+
+# Deploy
+flyctl deploy
+```
+
+### 3. Verify Deployment
+
+```bash
+# Check logs for bot startup
+flyctl logs | grep -i telegram
+
+# You should see:
+# ✅ Telegram bot started in polling mode
+# OR
+# ✅ Telegram webhook set to https://...
+```
+
+### 4. Test Your Bot
+
+1. Open Telegram and search for your bot (the username you gave it)
+2. Send `/start` - you should get a welcome message
+3. Send `/connect` - you should get a link to connect MetaMask
+
+## Troubleshooting
+
+### Bot Not Responding?
+
+1. **Check secrets are set:**
+   ```bash
+   flyctl secrets list
+   ```
+   You should see `TELEGRAM_BOT_TOKEN` and `PUBLIC_BASE_URL`
+
+2. **Check logs:**
+   ```bash
+   flyctl logs
+   ```
+   Look for:
+   - `✅ Telegram bot started in polling mode` (success)
+   - `⚠️ TELEGRAM_BOT_TOKEN not set` (missing token)
+   - `❌ Failed to start Telegram bot` (error - check the error message)
+
+3. **Restart the app:**
+   ```bash
+   flyctl apps restart turnertelegram
+   ```
+
+### Webhook Mode (Optional - Recommended for Production)
+
+For better performance and reliability, use webhook mode:
+
+```bash
+flyctl secrets set TELEGRAM_WEBHOOK_URL=https://turnertelegram.fly.dev/telegram-webhook
+flyctl secrets set TELEGRAM_WEBHOOK_SECRET=your_random_secret_here
+flyctl deploy
+```
+
+## Local Development
+
+```bash
+# Create virtual environment
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
-export TELEGRAM_BOT_TOKEN=your_token  # Optional for local testing
+
+# Set environment variables (optional for local testing)
+export TELEGRAM_BOT_TOKEN=your_token
+export PUBLIC_BASE_URL=http://localhost:8080
+export DB_PATH=./local.db
+
+# Run the app
 uvicorn app.main:app --reload --port 8080
 ```
 
@@ -40,7 +117,34 @@ uvicorn app.main:app --reload --port 8080
 - `/wallet` - View your linked wallet address
 - `/help` - Show help message
 
+## How It Works
+
+1. User sends `/start` or `/connect` to the Telegram bot
+2. Bot responds with a link containing their Telegram User ID
+3. User opens the link in a browser
+4. User connects MetaMask and clicks "Link wallet"
+5. User signs a message with MetaMask
+6. Server verifies the signature and stores the link
+7. Bot sends confirmation message to user
+
 ## Bot Modes
 
-- **Polling mode** (default): Bot polls Telegram for updates. Works for development.
-- **Webhook mode** (production): Set `TELEGRAM_WEBHOOK_URL` and `TELEGRAM_WEBHOOK_SECRET` for better performance and reliability.
+- **Polling mode** (default): Bot polls Telegram for updates. Works for development and small bots.
+- **Webhook mode** (production): Telegram sends updates to your server. More efficient and scalable.
+
+## Files Structure
+
+```
+turnertelegram/
+├── app/
+│   ├── __init__.py      # Package init
+│   ├── main.py          # FastAPI app + Telegram bot
+│   └── db.py            # SQLite database functions
+├── static/
+│   ├── index.html       # MetaMask connection UI
+│   ├── app.js           # Frontend JavaScript
+│   └── style.css        # Styling
+├── Dockerfile           # Container definition
+├── fly.toml            # Fly.io configuration
+├── requirements.txt    # Python dependencies
+└── readme.md           # This file
