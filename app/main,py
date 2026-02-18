@@ -1,0 +1,68 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import time
+
+from eth_account import Account
+from eth_account.messages import encode_defunct
+
+from .db import new_nonce, get_nonce, clear_nonce, save_link, get_link
+
+app = FastAPI()
+
+# Serve static UI
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+def index():
+    return FileResponse("static/index.html")
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+# ---- Wallet link flow (signature verification) ----
+
+class NonceReq(BaseModel):
+    user_key: str  # could be telegram_user_id, email, username, etc.
+
+class LinkReq(BaseModel):
+    user_key: str
+    address: str
+    signature: str
+
+def build_message(user_key: str, nonce: str) -> str:
+    # Simple, clear message. You can upgrade this to SIWE later.
+    return f"Link this wallet to user: {user_key}\nNonce: {nonce}"
+
+@app.post("/api/nonce")
+def api_nonce(req: NonceReq):
+    return {"ok": True, "nonce": new_nonce(req.user_key)}
+
+@app.post("/api/link")
+def api_link(req: LinkReq):
+    row = get_nonce(req.user_key)
+    if not row:
+        raise HTTPException(400, "missing_nonce")
+    nonce, created_at = row
+    if int(time.time()) - int(created_at) > 10 * 60:
+        raise HTTPException(400, "nonce_expired")
+
+    msg = build_message(req.user_key, nonce)
+    recovered = Account.recover_message(encode_defunct(text=msg), signature=req.signature)
+
+    if recovered.lower() != req.address.lower():
+        raise HTTPException(400, "bad_signature")
+
+    save_link(req.user_key, req.address)
+    clear_nonce(req.user_key)
+    return {"ok": True, "user_key": req.user_key, "address": req.address}
+
+@app.get("/api/link/{user_key}")
+def api_get_link(user_key: str):
+    row = get_link(user_key)
+    if not row:
+        return {"ok": True, "linked": False}
+    address, linked_at = row
+    return {"ok": True, "linked": True, "address": address, "linked_at": linked_at}
