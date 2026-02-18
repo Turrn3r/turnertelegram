@@ -13,8 +13,8 @@ from eth_account.messages import encode_defunct
 from .db import new_nonce, get_nonce, clear_nonce, save_link, get_link
 
 # Telegram bot imports
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 import logging
 
 logging.basicConfig(
@@ -23,94 +23,126 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global bot application
 bot_app = None
 
+def get_connect_keyboard(user_id: str):
+    """Build inline keyboard with Connect MetaMask button."""
+    web_url = os.getenv("PUBLIC_BASE_URL", "https://turnertelegram.fly.dev")
+    link_url = f"{web_url}?user_key={user_id}"
+    keyboard = [
+        [InlineKeyboardButton("🔗 Connect MetaMask Wallet", url=link_url)],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_main_menu_keyboard():
+    """Persistent reply keyboard menu."""
+    keyboard = [
+        [KeyboardButton("🔗 Connect Wallet"), KeyboardButton("💼 My Wallet")],
+        [KeyboardButton("❓ Help")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
+    """Handle /start - show welcome and menu with Connect button."""
     user_id = str(update.effective_user.id)
     web_url = os.getenv("PUBLIC_BASE_URL", "https://turnertelegram.fly.dev")
     link_url = f"{web_url}?user_key={user_id}"
-    
+
+    text = (
+        "👋 Welcome to the MetaMask Telegram Bot!\n\n"
+        "Connect your MetaMask wallet to link it to this chat.\n\n"
+        "👇 Tap the button below to open the Connect page, then:\n"
+        "1. Connect MetaMask in your browser\n"
+        "2. Click \"Link wallet\" and sign the message\n"
+        "3. Come back here and use \"My Wallet\" to confirm\n\n"
+        "Your User ID: " + user_id
+    )
+
     await update.message.reply_text(
-        f"👋 Welcome to the MetaMask Telegram Bot!\n\n"
-        f"Your Telegram User ID: `{user_id}`\n\n"
-        f"To connect your MetaMask wallet:\n"
-        f"1. Click the link below\n"
-        f"2. Connect MetaMask\n"
-        f"3. Click 'Link wallet' to sign and link\n\n"
-        f"{link_url}\n\n"
-        f"Commands:\n"
-        f"/connect - Get connection link\n"
-        f"/wallet - View your linked wallet\n"
-        f"/help - Show help",
-        parse_mode='Markdown'
+        text,
+        reply_markup=get_connect_keyboard(user_id),
+    )
+    await update.message.reply_text(
+        "Choose an option:",
+        reply_markup=get_main_menu_keyboard(),
     )
 
 async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /connect command"""
+    """Handle /connect - send Connect MetaMask button."""
     user_id = str(update.effective_user.id)
-    web_url = os.getenv("PUBLIC_BASE_URL", "https://turnertelegram.fly.dev")
-    link_url = f"{web_url}?user_key={user_id}"
-    
+
+    text = (
+        "🔗 Connect your MetaMask wallet\n\n"
+        "Tap the button below to open the Connect page in your browser.\n"
+        "Then connect MetaMask and click \"Link wallet\" to sign."
+    )
+
     await update.message.reply_text(
-        f"🔗 Connect your MetaMask wallet:\n\n"
-        f"1. Open this link: {link_url}\n"
-        f"2. Connect MetaMask\n"
-        f"3. Click 'Link wallet' to sign\n\n"
-        f"Your User ID: `{user_id}`",
-        parse_mode='Markdown'
+        text,
+        reply_markup=get_connect_keyboard(user_id),
     )
 
 async def wallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /wallet command"""
+    """Handle /wallet - show linked wallet or prompt to connect."""
     user_id = str(update.effective_user.id)
     link_data = get_link(user_id)
-    
+
     if not link_data:
+        text = (
+            "❌ No wallet linked yet.\n\n"
+            "Use the \"Connect Wallet\" button or /connect to link your MetaMask wallet."
+        )
         await update.message.reply_text(
-            "❌ No wallet linked.\n\n"
-            "Use /connect to link your MetaMask wallet.",
-            parse_mode='Markdown'
+            text,
+            reply_markup=get_connect_keyboard(user_id),
         )
     else:
         address, linked_at = link_data
-        await update.message.reply_text(
-            f"💼 Your linked wallet:\n\n"
-            f"Address: `{address}`\n"
-            f"Linked: <t:{linked_at}:R>",
-            parse_mode='Markdown'
+        text = (
+            "💼 Your linked wallet\n\n"
+            "Address: " + address + "\n"
+            "Linked (timestamp): " + str(linked_at)
         )
+        await update.message.reply_text(text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command"""
-    await update.message.reply_text(
-        "📖 Available Commands:\n\n"
-        "/start - Start the bot\n"
-        "/connect - Get link to connect MetaMask\n"
-        "/wallet - View your linked wallet\n"
-        "/help - Show this help",
-        parse_mode='Markdown'
+    """Handle /help."""
+    text = (
+        "📖 Menu\n\n"
+        "🔗 Connect Wallet – Open link to connect MetaMask\n"
+        "💼 My Wallet – View your linked wallet address\n"
+        "❓ Help – This message\n\n"
+        "Commands: /start /connect /wallet /help"
     )
+    await update.message.reply_text(text)
+
+async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle menu button taps (Connect Wallet, My Wallet, Help)."""
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text.strip()
+    if "Connect" in text or "connect" in text:
+        await connect_command(update, context)
+    elif "My Wallet" in text or "wallet" in text.lower():
+        await wallet_command(update, context)
+    elif "Help" in text or "help" in text:
+        await help_command(update, context)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events"""
     global bot_app
-    
-    # Startup: Initialize Telegram bot
+
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if bot_token:
         try:
             bot_app = Application.builder().token(bot_token).build()
-            
-            # Add handlers
+
             bot_app.add_handler(CommandHandler("start", start_command))
             bot_app.add_handler(CommandHandler("connect", connect_command))
             bot_app.add_handler(CommandHandler("wallet", wallet_command))
             bot_app.add_handler(CommandHandler("help", help_command))
-            
-            # Start bot (webhook mode if WEBHOOK_URL is set, else polling)
+            bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_button_handler))
+
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
             if webhook_url:
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
@@ -120,22 +152,20 @@ async def lifespan(app: FastAPI):
                     url=webhook_url,
                     secret_token=webhook_secret if webhook_secret else None
                 )
-                logger.info(f"✅ Telegram webhook set to {webhook_url}")
+                logger.info("✅ Telegram webhook set to %s", webhook_url)
             else:
-                # Start polling in background
                 await bot_app.initialize()
                 await bot_app.start()
                 await bot_app.updater.start_polling(drop_pending_updates=True)
                 logger.info("✅ Telegram bot started in polling mode")
         except Exception as e:
-            logger.error(f"❌ Failed to start Telegram bot: {e}", exc_info=True)
+            logger.error("❌ Failed to start Telegram bot: %s", e, exc_info=True)
             bot_app = None
     else:
         logger.warning("⚠️ TELEGRAM_BOT_TOKEN not set, Telegram bot disabled")
-    
+
     yield
-    
-    # Shutdown: Stop Telegram bot
+
     if bot_app:
         try:
             if hasattr(bot_app, 'updater') and bot_app.updater and bot_app.updater.running:
@@ -144,11 +174,10 @@ async def lifespan(app: FastAPI):
             await bot_app.shutdown()
             logger.info("Telegram bot stopped")
         except Exception as e:
-            logger.error(f"Error stopping bot: {e}")
+            logger.error("Error stopping bot: %s", e)
 
 app = FastAPI(lifespan=lifespan)
 
-# Serve static UI
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
@@ -159,33 +188,28 @@ def index():
 def healthz():
     return {"ok": True, "bot_status": "running" if bot_app else "disabled"}
 
-# Telegram webhook endpoint (if using webhook mode)
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request):
-    """Handle Telegram webhook updates"""
     if not bot_app:
         raise HTTPException(500, "Telegram bot not initialized")
-    
-    # Verify webhook secret if set
+
     webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
     if webhook_secret:
         secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if secret_header != webhook_secret:
             raise HTTPException(403, "Invalid webhook secret")
-    
+
     try:
         update_data = await request.json()
         update = Update.de_json(update_data, bot_app.bot)
         await bot_app.process_update(update)
         return {"ok": True}
     except Exception as e:
-        logger.error(f"Error processing webhook update: {e}", exc_info=True)
-        raise HTTPException(500, f"Error processing update: {str(e)}")
-
-# ---- Wallet link flow (signature verification) ----
+        logger.error("Error processing webhook update: %s", e, exc_info=True)
+        raise HTTPException(500, "Error processing update")
 
 class NonceReq(BaseModel):
-    user_key: str  # could be telegram_user_id, email, username, etc.
+    user_key: str
 
 class LinkReq(BaseModel):
     user_key: str
@@ -193,7 +217,6 @@ class LinkReq(BaseModel):
     signature: str
 
 def build_message(user_key: str, nonce: str) -> str:
-    # Simple, clear message. You can upgrade this to SIWE later.
     return f"Link this wallet to user: {user_key}\nNonce: {nonce}"
 
 @app.post("/api/nonce")
@@ -217,18 +240,16 @@ async def api_link(req: LinkReq):
 
     save_link(req.user_key, req.address)
     clear_nonce(req.user_key)
-    
-    # Notify user via Telegram if bot is available
+
     if bot_app:
         try:
             await bot_app.bot.send_message(
                 chat_id=req.user_key,
-                text=f"✅ Wallet linked successfully!\n\nAddress: `{req.address}`",
-                parse_mode='Markdown'
+                text="✅ Wallet linked successfully!\n\nAddress: " + req.address,
             )
         except Exception as e:
-            logger.error(f"Failed to send Telegram notification: {e}")
-    
+            logger.error("Failed to send Telegram notification: %s", e)
+
     return {"ok": True, "user_key": req.user_key, "address": req.address}
 
 @app.get("/api/link/{user_key}")
