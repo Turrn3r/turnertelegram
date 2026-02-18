@@ -13,16 +13,17 @@
     button:disabled { opacity: 0.6; }
     .status { margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); }
     .muted { opacity: 0.85; }
+    .open-meta { font-size: 18px; padding: 16px; margin: 12px 0; }
   </style>
 </head>
 <body>
   <main class="card">
     <h1>Link Wallet to Telegram</h1>
-    <p class="muted" id="subtitle">Connect MetaMask and sign to link your wallet to Telegram.</p>
+    <p class="muted" id="subtitle">Connect MetaMask and sign to link your wallet. Then return to Telegram and tap My Wallet.</p>
 
-    <div id="openInMetaMask" class="mobile-only" style="display: none;">
-      <p>Tap to open in the MetaMask app:</p>
-      <a id="metamaskDeepLink" href="#" class="btn primary">Open in MetaMask App</a>
+    <div id="openInMetaMask" style="display: none;">
+      <p>This page must open in the MetaMask app to connect.</p>
+      <a id="metamaskDeepLink" href="#" class="btn primary open-meta">Open in MetaMask App</a>
     </div>
 
     <div id="connectFlow">
@@ -37,13 +38,147 @@
         <div><strong>Address:</strong> <span id="address">—</span></div>
       </div>
       <div id="successBlock" style="display: none; margin-top: 16px; padding: 12px; background: rgba(80,200,80,0.2); border-radius: 10px;">
-        <strong>Done!</strong> Return to Telegram and tap <strong>My Wallet</strong> to confirm.
+        <strong>Done!</strong> Return to Telegram and tap <strong>My Wallet</strong> to see your balance.
       </div>
     </div>
     <noscript>
       <p style="margin-top: 16px; opacity: 0.9;">Enable JavaScript to connect MetaMask and link your wallet.</p>
     </noscript>
   </main>
-  <script src="/static/app.js"></script>
+  <script>
+(function(){
+  var account = null;
+  var baseUrl = window.location.origin;
+  var urlParams = new URLSearchParams(window.location.search);
+  var userKeyFromUrl = urlParams.get('user_key');
+  var userKeyEl = document.getElementById('userKey');
+  var userKeyDisplay = document.getElementById('userKeyDisplay');
+  if (userKeyFromUrl && userKeyEl) {
+    userKeyEl.value = userKeyFromUrl;
+    if (userKeyDisplay) userKeyDisplay.textContent = 'Linking to Telegram user: ' + userKeyFromUrl;
+  }
+  function isMobile() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
+  }
+  function updateStatus(msg, type) {
+    var statusEl = document.getElementById('status');
+    if (!statusEl) return;
+    statusEl.textContent = msg;
+    statusEl.className = type === 'error' ? 'error' : 'success';
+  }
+  function showConnectFlow() {
+    var openBlock = document.getElementById('openInMetaMask');
+    var flowBlock = document.getElementById('connectFlow');
+    if (openBlock) openBlock.style.display = 'none';
+    if (flowBlock) flowBlock.style.display = 'block';
+  }
+  function showOpenInMetaMask() {
+    var openBlock = document.getElementById('openInMetaMask');
+    var flowBlock = document.getElementById('connectFlow');
+    if (flowBlock) flowBlock.style.display = 'none';
+    if (openBlock) {
+      openBlock.style.display = 'block';
+      var pageUrl = window.location.href;
+      var deepLink = 'https://metamask.app.link/dapp/' + encodeURIComponent(pageUrl);
+      var a = document.getElementById('metamaskDeepLink');
+      if (a) a.href = deepLink;
+    }
+  }
+  function showSuccess() {
+    var block = document.getElementById('successBlock');
+    if (block) block.style.display = 'block';
+  }
+  async function connectMetaMask() {
+    if (typeof window.ethereum === 'undefined') {
+      if (isMobile()) { showOpenInMetaMask(); return; }
+      updateStatus('MetaMask not installed', 'error');
+      return;
+    }
+    try {
+      updateStatus('Connecting…', 'success');
+      var accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      account = accounts[0];
+      updateStatus('Connected', 'success');
+      var addrEl = document.getElementById('address');
+      if (addrEl) addrEl.textContent = account;
+      var linkBtn = document.getElementById('linkBtn');
+      if (linkBtn) linkBtn.disabled = false;
+    } catch (err) {
+      updateStatus('Connection failed: ' + (err && err.message ? err.message : 'Unknown'), 'error');
+    }
+  }
+  async function linkWallet() {
+    if (!account) {
+      updateStatus('Please connect MetaMask first', 'error');
+      return;
+    }
+    var userKey = userKeyEl ? userKeyEl.value.trim() : '';
+    if (!userKey) {
+      updateStatus('Missing user key. Open this page from the Telegram bot link.', 'error');
+      return;
+    }
+    try {
+      updateStatus('Getting nonce…', 'success');
+      var nonceRes = await fetch(baseUrl + '/api/nonce', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_key: userKey })
+      });
+      var nonceData = await nonceRes.json();
+      if (!nonceData.ok) throw new Error('Failed to get nonce');
+      var message = 'Link this wallet to user: ' + userKey + '\nNonce: ' + nonceData.nonce;
+      updateStatus('Approve the sign request in MetaMask…', 'success');
+      var signature = await window.ethereum.request({
+        method: 'personal_sign',
+        params: [message, account]
+      });
+      updateStatus('Linking…', 'success');
+      var linkRes = await fetch(baseUrl + '/api/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_key: userKey, address: account, signature: signature })
+      });
+      var linkData = await linkRes.json().catch(function() { return {}; });
+      if (linkRes.ok && linkData.ok) {
+        updateStatus('Linked!', 'success');
+        showSuccess();
+        var linkBtn = document.getElementById('linkBtn');
+        if (linkBtn) linkBtn.disabled = true;
+      } else {
+        var errMsg = linkData.detail || linkData.error || (linkRes.status === 400 ? 'Bad request (check signature)' : 'Linking failed');
+        if (Array.isArray(linkData.detail)) errMsg = linkData.detail.map(function(d) { return d.msg || d; }).join(', ');
+        throw new Error(errMsg);
+      }
+    } catch (err) {
+      var msg = (err && err.message) ? err.message : 'Linking failed';
+      updateStatus(msg, 'error');
+    }
+  }
+  if (typeof window.ethereum !== 'undefined') {
+    showConnectFlow();
+    window.ethereum.request({ method: 'eth_accounts' })
+      .then(function(accounts) {
+        if (accounts && accounts.length > 0) {
+          account = accounts[0];
+          updateStatus('Connected', 'success');
+          var addrEl = document.getElementById('address');
+          if (addrEl) addrEl.textContent = account;
+          var linkBtn = document.getElementById('linkBtn');
+          if (linkBtn) linkBtn.disabled = false;
+        }
+        if (userKeyFromUrl && !account) connectMetaMask();
+      })
+      .catch(function() {});
+  } else if (isMobile()) {
+    showOpenInMetaMask();
+  } else {
+    showConnectFlow();
+  }
+  var connectBtn = document.getElementById('connectBtn');
+  var linkBtn = document.getElementById('linkBtn');
+  if (connectBtn) connectBtn.addEventListener('click', connectMetaMask);
+  if (linkBtn) linkBtn.addEventListener('click', linkWallet);
+})();
+  </script>
 </body>
 </html>
